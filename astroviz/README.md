@@ -44,6 +44,19 @@ views are derived in the browser from the mass ratio, the eccentricity and the
 true anomaly. `python/astroviz/er3bp.py` is a stand-in scipy propagator so the
 example builds without PyDylan. It is not part of the toolkit's contract.
 
+### Sampling and smoothness
+
+Following the matplotlib reference tool, the drawing grid is decoupled from the
+playback grid. The exporter propagates each member densely (6000 points in
+true anomaly), then keeps 480 samples at equal intervals of *blended on-screen
+arclength*: per-step distance normalised by each frame's extent, the largest
+over the five frames, divided evenly. Every sample carries its own true
+anomaly. In the browser the trail is cut from that track at the current epoch
+and the spacecraft is interpolated between the two bracketing samples, so the
+orbit is smooth in every frame at any playback spacing. Playback can be
+uniform in true anomaly, in nondimensional time (Kepler's equation solved in
+the browser), or in arclength.
+
 ### Container format
 
 `python/astroviz/container.py` and `web/src/container.ts` implement the same
@@ -62,15 +75,20 @@ which is the path for ephemeris-scale data.
 - Drawing is a pure function of a sample index (`showFrame(i)`). Playback just
   advances the index. This is what makes deterministic recording to video
   possible without dropped frames.
-- `<astro-viewer data="#id|url">` is the embeddable element: family tabs,
-  branch toggle, parameter slider, frame selector, transport, keyboard
-  (space, arrows, shift+arrows).
+- `<astro-viewer data="#id|url" frames="rotating_pulsating ...">` is the
+  embeddable element: family tabs, branch toggle, parameter slider, frame
+  toggles (one synchronized panel per frame), playback spacing, family
+  ghosts coloured by parameter with a colourbar (one colormap per frame, as in
+  the reference figures), Okabe-Ito markers, fps counter, keyboard (space,
+  arrows, shift+arrows).
+- Camera policy: a panel is fitted when opened and when the family changes;
+  the parameter slider and branch toggle never move it.
 
 ## Known limitations of the prototype
 
-- 401 samples per orbit, uniform in true anomaly. High-eccentricity members
-  look polygonal in inertial frames where the craft moves fast per radian.
-  The fix is to sample densely for drawing and stride for playback.
+- Each panel owns a WebGL context; with all members ghosted in several panels
+  this is fine on a GPU but slow under software rendering. One renderer with a
+  scissor rectangle per panel is the planned fix.
 - Planar only; the data path carries z = 0 but the exporter does not yet
   accept 3D states.
 - No recording, no notebook widget, no sidecar loading UI yet.

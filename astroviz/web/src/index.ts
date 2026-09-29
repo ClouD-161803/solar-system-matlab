@@ -4,7 +4,8 @@
  */
 
 export { Container, loadContainer, decodeEmbedded } from './container';
-export { FRAMES, rho, elapsedTime, transformTrajectory, bodyPosition, bodyTrail } from './frames';
+export { FRAMES, rho, elapsedTime, trueAnomalyFromTime, segmentIndex, transformTrajectory, bodyPosition, bodyTrail } from './frames';
+export { colormap, colormapCss } from './colormaps';
 export { OrbitViewer, DARK } from './viewer';
 export { AstroViewerElement, define } from './element';
 

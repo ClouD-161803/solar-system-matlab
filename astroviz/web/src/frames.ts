@@ -24,14 +24,16 @@ export interface FrameSpec {
   id: FrameId;
   label: string;
   axes: [string, string];
+  /** colormap for family members in this frame, following the reference figures */
+  cmap: 'viridis' | 'plasma' | 'cividis' | 'blues' | 'reds';
 }
 
 export const FRAMES: FrameSpec[] = [
-  { id: 'rotating_pulsating', label: 'rotating-pulsating', axes: ['x [DU]', 'y [DU]'] },
-  { id: 'rotating', label: 'rotating', axes: ['x̃ [DU]', 'ỹ [DU]'] },
-  { id: 'barycentric_inertial', label: 'barycentric inertial', axes: ['ξ [DU]', 'η [DU]'] },
-  { id: 'inertial_primary', label: 'inertial, centred on m₁', axes: ['ξ₁ [DU]', 'η₁ [DU]'] },
-  { id: 'inertial_secondary', label: 'inertial, centred on m₂', axes: ['ξ₂ [DU]', 'η₂ [DU]'] },
+  { id: 'rotating_pulsating', label: 'rotating-pulsating', axes: ['x [DU]', 'y [DU]'], cmap: 'viridis' },
+  { id: 'rotating', label: 'rotating', axes: ['x̃ [DU]', 'ỹ [DU]'], cmap: 'blues' },
+  { id: 'barycentric_inertial', label: 'barycentric inertial', axes: ['ξ [DU]', 'η [DU]'], cmap: 'plasma' },
+  { id: 'inertial_primary', label: 'inertial, centred on m₁', axes: ['ξ₁ [DU]', 'η₁ [DU]'], cmap: 'reds' },
+  { id: 'inertial_secondary', label: 'inertial, centred on m₂', axes: ['ξ₂ [DU]', 'η₂ [DU]'], cmap: 'cividis' },
 ];
 
 export interface ER3BPSystem {
@@ -110,7 +112,7 @@ export function bodyPosition(
  */
 export function transformTrajectory(
   xy: Float32Array,
-  fRel: Float64Array,
+  fRel: ArrayLike<number>,
   sys: ER3BPSystem,
   frame: FrameId,
   out: Float32Array,
@@ -153,7 +155,7 @@ export function transformTrajectory(
 /** Path of a body over the trajectory's true anomaly grid, as M triples. */
 export function bodyTrail(
   body: 'primary' | 'secondary',
-  fRel: Float64Array,
+  fRel: ArrayLike<number>,
   sys: ER3BPSystem,
   frame: FrameId,
   out: Float32Array,
@@ -166,4 +168,37 @@ export function bodyTrail(
     out[3 * i + 2] = 0;
   }
   return out;
+}
+
+/**
+ * True anomaly reached after nondimensional time `tau` from `f0` (mean motion 1),
+ * unwrapped so it grows monotonically. Newton iteration on Kepler's equation.
+ */
+export function trueAnomalyFromTime(e: number, f0: number, tau: number): number {
+  const M = meanAnomaly(e, f0) + tau;
+  const k = Math.floor(M / (2 * Math.PI));
+  const Mr = M - 2 * Math.PI * k;
+  let E = e < 0.8 ? Mr : Math.PI;
+  for (let i = 0; i < 30; i++) {
+    const d = (E - e * Math.sin(E) - Mr) / (1 - e * Math.cos(E));
+    E -= d;
+    if (Math.abs(d) < 1e-13) break;
+  }
+  let f = 2 * Math.atan2(Math.sqrt(1 + e) * Math.sin(E / 2), Math.sqrt(1 - e) * Math.cos(E / 2));
+  if (f < 0) f += 2 * Math.PI;
+  return f + 2 * Math.PI * k;
+}
+
+/** Index i with a[i] <= v < a[i+1] for a sorted array (clamped to [0, n-2]). */
+export function segmentIndex(a: ArrayLike<number>, v: number): number {
+  let lo = 0;
+  let hi = a.length - 1;
+  if (v <= a[0]) return 0;
+  if (v >= a[hi]) return hi - 1;
+  while (hi - lo > 1) {
+    const mid = (lo + hi) >> 1;
+    if (a[mid] <= v) lo = mid;
+    else hi = mid;
+  }
+  return lo;
 }

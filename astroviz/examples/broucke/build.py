@@ -31,7 +31,8 @@ FAMILIES = [
     (11, 0.5),
 ]
 BRANCHES = [("periapsis", 0.0), ("apoapsis", float(np.pi))]
-N_SAMPLES = 401
+N_SAMPLES = 480  # per member, at equal blended arclength
+N_DENSE = 6000  # propagation grid each member is resampled from
 
 
 def main() -> None:
@@ -43,6 +44,7 @@ def main() -> None:
     writer.meta = {
         "title": "Broucke families in the ER3BP",
         "note": "Trajectories sampled with the stand-in scipy propagator, not PyDylan.",
+        "sampling": "blended arclength across the five display frames",
     }
     t0 = time.time()
     for number, mu in FAMILIES:
@@ -61,6 +63,7 @@ def main() -> None:
                 f0=f0,
                 propagate=propagate_planar,
                 n_samples=N_SAMPLES,
+                n_dense=N_DENSE,
             )
     container = writer.to_bytes()
     print(f"container: {len(container) / 1e6:.1f} MB, sampled in {time.time() - t0:.0f} s")
