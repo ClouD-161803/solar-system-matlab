@@ -78,6 +78,8 @@ const SPARSE_COUNT = 40;
 const SPARSE_ALPHA = 0.4;
 /** Spacecraft trail: length as a fraction of the period, core and glow widths in CSS pixels at the craft. */
 const TRAIL_FRACTION = 0.3;
+/** Nose: the ribbon grows from a point at the craft to full width over this fraction of the trail. */
+const TRAIL_NOSE = 0.07;
 const TRAIL_CORE_PX = 6;
 const TRAIL_GLOW_PX = 22;
 /** Time constants of the alpha relaxation: fast in, slower out, so the trail fades behind. */
@@ -298,7 +300,7 @@ export class OrbitViewer {
       }
       // one extra vertex for the interpolated spacecraft position
       this.orbit.geometry.setAttribute('position', new THREE.BufferAttribute(new Float32Array(3 * (m + 1)), 3));
-      const P = m + 1;
+      const P = m + 3; // samples, the craft, and two nose points
       this.trailPts = new Float32Array(2 * P);
       this.trailT = new Float32Array(P);
       const index: number[] = [];
@@ -568,6 +570,23 @@ export class OrbitViewer {
         idx = m - 2;
       } else idx--;
     }
+    // shape the nose: two extra points on the first segment so the taper from the craft is smooth
+    if (n >= 2 && tt[1] > TRAIL_NOSE) {
+      for (let i = n - 1; i >= 1; i--) {
+        pts[2 * (i + 2)] = pts[2 * i];
+        pts[2 * (i + 2) + 1] = pts[2 * i + 1];
+        tt[i + 2] = tt[i];
+      }
+      const seg = tt[3];
+      for (let j = 1; j <= 2; j++) {
+        const t = (TRAIL_NOSE * j) / 2;
+        const w = t / seg;
+        pts[2 * j] = pts[0] + (pts[6] - pts[0]) * w;
+        pts[2 * j + 1] = pts[1] + (pts[7] - pts[1]) * w;
+        tt[j] = t;
+      }
+      n += 2;
+    }
     this.trailCount = n;
     const line = this.orbit.geometry.getAttribute('position') as THREE.BufferAttribute;
     const larr = line.array as Float32Array;
@@ -687,7 +706,8 @@ export class OrbitViewer {
         tx /= len;
         ty /= len;
         const t = this.trailT[i];
-        const taper = Math.pow(1 - t, 0.8);
+        const nose = t < TRAIL_NOSE ? 1 - Math.pow(1 - t / TRAIL_NOSE, 2) : 1; // pointed at the craft
+        const taper = Math.pow(1 - t, 0.8) * nose;
         const half = 0.5 * widthPx * px * taper;
         const nx = -ty * half;
         const ny = tx * half;
