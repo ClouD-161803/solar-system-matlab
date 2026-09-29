@@ -3,13 +3,21 @@
  *
  * Drawing is a pure function of a true anomaly: `showAt(fRel)` draws the state
  * at that epoch and nothing depends on wall-clock time, which is what makes
- * deterministic recording possible.
+ * deterministic recording possible. The one exception is cosmetic: the family
+ * highlight eases and ripples between members over a short transition.
  *
  * Smoothness follows the reference matplotlib tool: the stored samples are a
  * dense, arclength-adaptive track. The trail is cut from that track at the
  * current epoch rather than joined up from a playback grid, so it lies on the
  * orbit instead of chording across it, and the spacecraft is interpolated
  * between the two samples that bracket the epoch.
+ *
+ * Colour: the current member's trail and full orbit take that member's colour
+ * in the frame's colormap. The other members are drawn with per-vertex alpha:
+ * a kernel over parameter distance brightens the neighbours of the current
+ * member and fades with distance, so sliding through the family reads as a
+ * moving band of colour. When the member changes, the band cross-fades and a
+ * pulse travels outward from the new member through the family and dies away.
  */
 
 import * as THREE from 'three';
@@ -28,7 +36,6 @@ import {
 /** Okabe-Ito on black, as in the reference animation. */
 export interface Palette {
   background: string;
-  trail: string;
   craft: string;
   primary: string;
   secondary: string;
@@ -39,7 +46,6 @@ export interface Palette {
 
 export const DARK: Palette = {
   background: '#000000',
-  trail: '#E69F00',
   craft: '#F0E442',
   primary: '#56B4E9',
   secondary: '#A8A8A8',
@@ -58,6 +64,19 @@ export interface FamilyTracks {
   mu: number;
   f0: number;
 }
+
+export type FamilyMode = 'hidden' | 'neighbours' | 'all';
+
+/** Highlight kernel width as a fraction of the family's parameter range. */
+const NEIGHBOUR_SIGMA = 0.05;
+/** Alpha of the nearest neighbours; the current member itself is drawn separately. */
+const NEIGHBOUR_PEAK = 0.6;
+/** Cross-fade time when the current member changes, in ms. */
+const FADE_MS = 260;
+/** Ripple: duration, peak alpha added, pulse width as a fraction of the range. */
+const RIPPLE_MS = 700;
+const RIPPLE_AMPLITUDE = 0.55;
+const RIPPLE_WIDTH = 0.04;
 
 function discTexture(): THREE.Texture {
   const c = document.createElement('canvas');
@@ -103,6 +122,10 @@ function niceStep(range: number, target = 6): number {
   return step * mag;
 }
 
+function easeInOut(t: number): number {
+  return t < 0.5 ? 2 * t * t : 1 - Math.pow(-2 * t + 2, 2) / 2;
+}
+
 export class OrbitViewer {
   readonly host: HTMLElement;
   readonly canvas: HTMLCanvasElement;
@@ -125,12 +148,19 @@ export class OrbitViewer {
 
   // family ghosts
   private tracks: FamilyTracks | null = null;
-  private ghostStride = 0; // 0 = none, 1 = all, k = every k-th member
-  private ghostRange: [number, number] | null = null;
+  private familyMode: FamilyMode = 'hidden';
+  private paramRange: [number, number] | null = null;
+  private alphaNow = new Float32Array(0); // per member, as drawn
+  private alphaFrom = new Float32Array(0); // per member, at the start of the transition
+  private alphaTo = new Float32Array(0); // per member, target
+  private fadeStart = 0;
+  private fadeRaf = 0;
+  private rippleOrigin = 0; // parameter value the pulse spreads from
+  private rippleOn = false;
 
   private orbit: THREE.Line; // trail up to the current epoch
   private ghost: THREE.Line; // the current member's complete orbit
-  private family: THREE.LineSegments; // other members, coloured by parameter
+  private family: THREE.LineSegments; // other members, coloured by parameter with per-vertex alpha
   private craft: THREE.Points;
   private primary: THREE.Points;
   private secondary: THREE.Points;
@@ -174,13 +204,14 @@ export class OrbitViewer {
     });
 
     const tex = discTexture();
+    // a 4-component colour attribute gives per-vertex alpha in three.js
     this.family = new THREE.LineSegments(
       new THREE.BufferGeometry(),
-      new THREE.LineBasicMaterial({ vertexColors: true, transparent: true, opacity: 0.4, depthTest: false }),
+      new THREE.LineBasicMaterial({ vertexColors: true, transparent: true, opacity: 1, depthTest: false }),
     );
     this.family.visible = false;
-    this.ghost = line('#d0d0d0', 0.75, 2); // the current member's complete orbit
-    this.orbit = line(this.palette.trail, 1, 2);
+    this.ghost = line('#d0d0d0', 0.8, 2); // the current member's complete orbit, recoloured per member
+    this.orbit = line('#ffffff', 1, 2); // the trail, recoloured per member
     this.primaryTrail = line(this.palette.primary, 0.3, 2);
     this.secondaryTrail = line(this.palette.secondary, 0.3, 2);
     this.craft = points(this.palette.craft, 9, tex, 1);
@@ -210,6 +241,7 @@ export class OrbitViewer {
   }
 
   dispose(): void {
+    cancelAnimationFrame(this.fadeRaf);
     this.ro.disconnect();
     this.controls.dispose();
     this.renderer.dispose();
@@ -223,11 +255,19 @@ export class OrbitViewer {
     return this.fNow;
   }
 
+  /** Colour of the current member in this frame's colormap. */
+  private memberColor(): string {
+    const r = this.paramRange;
+    const u = r && r[1] > r[0] ? (this.sys.e - r[0]) / (r[1] - r[0]) : 0.5;
+    return colormapCss(this.spec().cmap, u);
+  }
+
   /**
    * Loads the current member: M (x, y) rotating-pulsating pairs and M relative
    * true anomalies (increasing). The camera is left alone unless `refit`.
    */
   setTrajectory(xy: Float32Array, fRel: ArrayLike<number>, sys: ER3BPSystem, refit = false): void {
+    const changed = sys.e !== this.sys.e;
     this.xy = xy;
     this.fRel = fRel;
     this.sys = sys;
@@ -241,14 +281,19 @@ export class OrbitViewer {
       this.orbit.geometry.setAttribute('position', new THREE.BufferAttribute(new Float32Array(3 * (m + 1)), 3));
     }
     this.recompute();
+    if (changed) this.focusFamily(false, true);
     if (refit) this.fit();
   }
 
-  /** Family ghosts: every `stride`-th member of `tracks` drawn coloured by parameter; 0 hides them. */
-  setFamily(tracks: FamilyTracks | null, stride: number): void {
+  /** Family ghosts: all members of `tracks`, drawn according to `mode`. */
+  setFamily(tracks: FamilyTracks | null, mode: FamilyMode): void {
+    const rebuild = tracks !== this.tracks;
     this.tracks = tracks;
-    this.ghostStride = tracks ? stride : 0;
-    this.rebuildFamily();
+    this.familyMode = tracks ? mode : 'hidden';
+    if (rebuild) this.rebuildFamily();
+    this.family.visible = this.familyMode !== 'hidden' && !!tracks;
+    this.focusFamily(true);
+    this.recolour();
     this.render();
   }
 
@@ -279,39 +324,43 @@ export class OrbitViewer {
     return FRAMES.find((f) => f.id === this.frame)!;
   }
 
-  /** Rebuilds the family ghost geometry for the current frame. */
+  /** Rebuilds the family geometry (positions and RGB) for the current frame; alpha comes from the highlight. */
   private rebuildFamily(): void {
     const t = this.tracks;
-    const stride = this.ghostStride;
-    if (!t || stride <= 0) {
+    if (!t) {
+      this.paramRange = null;
       this.family.visible = false;
-      this.ghostRange = null;
       return;
     }
+    const n = t.count;
     const m = t.samples;
     let pmin = Infinity;
     let pmax = -Infinity;
-    for (let i = 0; i < t.count; i++) {
+    for (let i = 0; i < n; i++) {
       pmin = Math.min(pmin, t.params[i]);
       pmax = Math.max(pmax, t.params[i]);
     }
-    this.ghostRange = [pmin, pmax];
-    const members: number[] = [];
-    for (let i = 0; i < t.count; i += stride) members.push(i);
-    if (members[members.length - 1] !== t.count - 1) members.push(t.count - 1);
-    const segs = members.length * (m - 1);
+    this.paramRange = [pmin, pmax];
+    if (this.alphaNow.length !== n) {
+      this.alphaNow = new Float32Array(n);
+      this.alphaFrom = new Float32Array(n);
+      this.alphaTo = new Float32Array(n);
+    }
+    const segs = n * (m - 1);
     const pos = new Float32Array(segs * 6);
-    const col = new Float32Array(segs * 6);
+    const col = new Float32Array(segs * 8);
     const tmp = new Float32Array(3 * m);
     const rgb = [0, 0, 0];
     const cmap = this.spec().cmap;
     let o = 0;
-    for (const i of members) {
+    let c = 0;
+    for (let i = 0; i < n; i++) {
       const xy = t.positions.subarray(i * m * 2, (i + 1) * m * 2);
       const f = t.anomalies.subarray(i * m, (i + 1) * m);
       transformTrajectory(xy, f, { mu: t.mu, e: t.params[i], f0: t.f0 }, this.frame, tmp);
       const u = pmax > pmin ? (t.params[i] - pmin) / (pmax - pmin) : 0.5;
       colormap(cmap, u, rgb);
+      const a = this.alphaNow[i];
       for (let k = 0; k < m - 1; k++) {
         pos[o] = tmp[3 * k];
         pos[o + 1] = tmp[3 * k + 1];
@@ -319,18 +368,101 @@ export class OrbitViewer {
         pos[o + 3] = tmp[3 * k + 3];
         pos[o + 4] = tmp[3 * k + 4];
         pos[o + 5] = 0;
-        col[o] = col[o + 3] = rgb[0];
-        col[o + 1] = col[o + 4] = rgb[1];
-        col[o + 2] = col[o + 5] = rgb[2];
         o += 6;
+        col[c] = col[c + 4] = rgb[0];
+        col[c + 1] = col[c + 5] = rgb[1];
+        col[c + 2] = col[c + 6] = rgb[2];
+        col[c + 3] = col[c + 7] = a;
+        c += 8;
       }
     }
-    (this.family.material as THREE.LineBasicMaterial).opacity = Math.min(0.45, Math.max(0.06, 12 / members.length));
     const g = this.family.geometry;
     g.setAttribute('position', new THREE.BufferAttribute(pos, 3));
-    g.setAttribute('color', new THREE.BufferAttribute(col, 3));
+    g.setAttribute('color', new THREE.BufferAttribute(col, 4));
     g.computeBoundingSphere();
-    this.family.visible = true;
+    this.family.visible = this.familyMode !== 'hidden';
+  }
+
+  /**
+   * Target alphas for the current member's neighbourhood, then either applies
+   * them at once or starts the transition: an eased cross-fade, plus, when
+   * `ripple` is set, a pulse spreading outward from the new member.
+   */
+  private focusFamily(immediate = false, ripple = false): void {
+    const t = this.tracks;
+    const r = this.paramRange;
+    if (!t || !r) return;
+    const n = t.count;
+    const range = Math.max(1e-9, r[1] - r[0]);
+    const sigma = NEIGHBOUR_SIGMA * range;
+    const base = this.familyMode === 'all' ? Math.min(0.35, Math.max(0.05, 10 / n)) : 0;
+    let current = -1;
+    for (let i = 0; i < n; i++) if (t.params[i] === this.sys.e) current = i;
+    for (let i = 0; i < n; i++) {
+      const d = (t.params[i] - this.sys.e) / sigma;
+      const w = Math.exp(-d * d);
+      this.alphaTo[i] = i === current ? 0 : base + (NEIGHBOUR_PEAK - base) * w;
+    }
+    if (this.familyMode === 'hidden') this.alphaTo.fill(0);
+    cancelAnimationFrame(this.fadeRaf);
+    if (immediate || this.familyMode === 'hidden') {
+      this.alphaNow.set(this.alphaTo);
+      this.writeAlpha();
+      return;
+    }
+    this.alphaFrom.set(this.alphaNow);
+    this.fadeStart = performance.now();
+    this.rippleOn = ripple;
+    this.rippleOrigin = this.sys.e;
+    const width = RIPPLE_WIDTH * range;
+    const speed = range / (RIPPLE_MS * 0.8); // the pulse crosses the whole family before it dies
+    const total = ripple ? Math.max(FADE_MS, RIPPLE_MS) : FADE_MS;
+    const step = (now: number) => {
+      const dt = now - this.fadeStart;
+      const s = easeInOut(Math.min(1, dt / FADE_MS));
+      const rp = Math.min(1, dt / RIPPLE_MS);
+      const envelope = this.rippleOn ? RIPPLE_AMPLITUDE * (1 - rp) * (1 - rp) : 0;
+      const front = speed * dt;
+      for (let i = 0; i < n; i++) {
+        let a = this.alphaFrom[i] + (this.alphaTo[i] - this.alphaFrom[i]) * s;
+        if (envelope > 0 && i !== current) {
+          const d = (Math.abs(t.params[i] - this.rippleOrigin) - front) / width;
+          a += envelope * Math.exp(-d * d);
+        }
+        this.alphaNow[i] = Math.min(1, a);
+      }
+      this.writeAlpha();
+      this.render();
+      if (dt < total) this.fadeRaf = requestAnimationFrame(step);
+      else {
+        this.alphaNow.set(this.alphaTo);
+        this.writeAlpha();
+        this.render();
+      }
+    };
+    this.fadeRaf = requestAnimationFrame(step);
+  }
+
+  /** Copies the per-member alphas into the family colour attribute. */
+  private writeAlpha(): void {
+    const t = this.tracks;
+    const attr = this.family.geometry.getAttribute('color') as THREE.BufferAttribute | undefined;
+    if (!t || !attr) return;
+    const col = attr.array as Float32Array;
+    const per = (t.samples - 1) * 8;
+    for (let i = 0; i < t.count; i++) {
+      const a = this.alphaNow[i];
+      const start = i * per;
+      for (let c = start + 3; c < start + per; c += 4) col[c] = a;
+    }
+    attr.needsUpdate = true;
+  }
+
+  /** Recolours the current member's trail and complete orbit with its colormap colour. */
+  private recolour(): void {
+    const css = this.memberColor();
+    (this.orbit.material as THREE.LineBasicMaterial).color.set(css);
+    (this.ghost.material as THREE.LineBasicMaterial).color.set(css);
   }
 
   /** Recomputes the transformed member track and body trails for the current frame. */
@@ -340,6 +472,7 @@ export class OrbitViewer {
     transformTrajectory(this.xy, this.fRel, this.sys, this.frame, this.xyz);
     (this.ghost.geometry.getAttribute('position') as THREE.BufferAttribute).set(this.xyz).needsUpdate = true;
     this.ghost.geometry.setDrawRange(0, m);
+    this.recolour();
     const pt = this.primaryTrail.geometry.getAttribute('position') as THREE.BufferAttribute;
     const st = this.secondaryTrail.geometry.getAttribute('position') as THREE.BufferAttribute;
     bodyTrail('primary', this.fRel, this.sys, this.frame, pt.array as Float32Array);
@@ -538,9 +671,9 @@ export class OrbitViewer {
     halo(spec.axes[1], 0, 0);
     g.restore();
 
-    // colourbar for the family ghosts
-    if (this.ghostRange && this.family.visible) {
-      const [lo, hi] = this.ghostRange;
+    // colourbar for the family, with the highlighted band and a marker at the current member
+    if (this.paramRange && this.tracks) {
+      const [lo, hi] = this.paramRange;
       const bw = 8;
       const bh = Math.min(H * 0.5, 220);
       const bx = W - 46;
@@ -564,10 +697,14 @@ export class OrbitViewer {
       g.textAlign = 'center';
       g.textBaseline = 'bottom';
       g.fillText('e', bx + bw / 2, by - 4);
-      // marker for the current member
       if (hi > lo) {
         const py = by + bh - (bh * (this.sys.e - lo)) / (hi - lo);
-        g.fillStyle = this.palette.craft;
+        if (this.familyMode !== 'hidden') {
+          const half = bh * NEIGHBOUR_SIGMA * 1.5;
+          g.fillStyle = 'rgba(255,255,255,0.18)';
+          g.fillRect(bx - 3, py - half, bw + 6, 2 * half);
+        }
+        g.fillStyle = this.palette.text;
         g.beginPath();
         g.moveTo(bx - 2, py);
         g.lineTo(bx - 8, py - 4);

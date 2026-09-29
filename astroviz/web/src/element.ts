@@ -19,7 +19,7 @@
 
 import { Container, type DatasetRecord, loadContainer } from './container';
 import { FRAMES, type ER3BPSystem, type FrameId, elapsedTime, trueAnomalyFromTime } from './frames';
-import { type FamilyTracks, OrbitViewer } from './viewer';
+import { type FamilyMode, type FamilyTracks, OrbitViewer } from './viewer';
 
 interface FamilyDataset extends DatasetRecord {
   kind: 'periodic_orbit_family';
@@ -135,7 +135,7 @@ export class AstroViewerElement extends HTMLElement {
   private playing = false;
   private speed = 1;
   private spacing: Spacing = 'anomaly';
-  private ghostMode: 'none' | 'sparse' | 'all' = 'sparse';
+  private ghostMode: FamilyMode = 'neighbours';
   private progress = 0; // fraction of one period
   private raf = 0;
   private showGhost = true;
@@ -218,11 +218,11 @@ export class AstroViewerElement extends HTMLElement {
     gk.textContent = 'members';
     ghostField.append(
       gk,
-      select<'none' | 'sparse' | 'all'>(
+      select<FamilyMode>(
         [
-          { id: 'none', label: 'hidden' },
-          { id: 'sparse', label: 'every few members' },
-          { id: 'all', label: 'all members' },
+          { id: 'hidden', label: 'hidden' },
+          { id: 'neighbours', label: 'neighbours' },
+          { id: 'all', label: 'all, neighbours bright' },
         ],
         this.ghostMode,
         (v) => {
@@ -299,7 +299,6 @@ export class AstroViewerElement extends HTMLElement {
     legend.className = 'legend';
     for (const [css, label, isLine] of [
       ['#F0E442', 'spacecraft', false],
-      ['#E69F00', 'trail', true],
       ['#56B4E9', 'm\u2081', false],
       ['#A8A8A8', 'm\u2082', false],
     ] as [string, string, boolean][]) {
@@ -367,18 +366,8 @@ export class AstroViewerElement extends HTMLElement {
 
   // ---- panels -------------------------------------------------------------
 
-  private ghostStride(): number {
-    if (!this.tracks || this.ghostMode === 'none') return 0;
-    if (this.ghostMode === 'all') return 1;
-    return Math.max(1, Math.round(this.tracks.count / 40));
-  }
-
   private applyFamily(): void {
-    const stride = this.ghostStride();
-    for (const p of this.panels.values()) {
-      p.viewer.setFamily(this.tracks, stride);
-      p.viewer.setTrajectory(this.xy, this.fRel, this.sys, false);
-    }
+    for (const p of this.panels.values()) p.viewer.setFamily(this.tracks, this.ghostMode);
     this.drawAll();
   }
 
@@ -399,7 +388,7 @@ export class AstroViewerElement extends HTMLElement {
       this.panels.set(frame, { host, viewer });
       this.frameSeg.setPressed(frame, true);
       if (this.fRel.length) {
-        viewer.setFamily(this.tracks, this.ghostStride());
+        viewer.setFamily(this.tracks, this.ghostMode);
         viewer.setTrajectory(this.xy, this.fRel, this.sys, true);
         viewer.showAt(this.currentF());
       }
@@ -500,8 +489,7 @@ export class AstroViewerElement extends HTMLElement {
   private loadBranch(): void {
     const d = this.current();
     this.tracks = d ? this.loadTracks(d) : null;
-    const stride = this.ghostStride();
-    for (const p of this.panels.values()) p.viewer.setFamily(this.tracks, stride);
+    for (const p of this.panels.values()) p.viewer.setFamily(this.tracks, this.ghostMode);
   }
 
   private setMember(i: number): void {
