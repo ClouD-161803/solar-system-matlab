@@ -81,13 +81,14 @@ which is the path for ephemeris-scale data.
   members coloured by parameter with a colourbar (one colormap per frame, as
   in the reference figures), Okabe-Ito markers, fps counter, keyboard (space,
   arrows, shift+arrows).
-- The current member's trail and full orbit take its colormap colour. About
-  forty members are drawn as context. Members near the current one (Gaussian
-  kernel over parameter distance) carry a short trail just behind the
-  spacecraft that moves with it and fades along the orbit, so the family's
-  local structure shows where the craft is rather than all around the orbit.
-  The neighbourhood weight relaxes asymmetrically (about 60 ms in, 320 ms
-  out) when the slider moves. Always on; there is no toggle.
+- The spacecraft leaves a comet-style trail in the current member's colormap
+  colour: a tapered ribbon sized in screen pixels (6 px core, 22 px additive
+  glow at the craft) that thins and fades over 30% of the period behind it,
+  rebuilt each frame from the stored track. The member's full orbit is drawn
+  under it at lower alpha.
+- About forty members are drawn as context and members near the current one
+  (Gaussian kernel over parameter distance) are lit over their whole orbits,
+  relaxing about 60 ms in and 320 ms out when the slider moves. Always on.
 - At most four panels; opening a fifth replaces the earliest-opened one.
 - Camera policy: a panel is fitted when opened and when the family changes;
   the parameter slider and branch toggle never move it.

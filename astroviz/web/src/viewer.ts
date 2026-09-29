@@ -13,13 +13,13 @@
  * between the two samples that bracket the epoch.
  *
  * Colour: the current member's trail and full orbit take that member's colour
- * in the frame's colormap. The other members are drawn with per-vertex alpha:
- * a kernel over parameter distance brightens the neighbours of the current
- * member and fades with distance, so sliding through the family reads as a
- * moving band of colour. A sparse subset of the family is drawn dimly behind
- * it for context. Alphas rise almost at once when a member enters the band
- * and decay with a short time constant when it leaves, so the members just
- * visited trail behind the direction of travel and fade.
+ * in the frame's colormap. The spacecraft leaves a comet-style trail: a
+ * tapered ribbon sized in screen pixels, bright and wide at the craft, thinning
+ * and fading over a fixed stretch of orbit behind it, with a soft additive
+ * glow underneath. The other members are drawn with per-vertex alpha: a kernel
+ * over parameter distance brightens the neighbours of the current member over
+ * their whole orbits, on top of a sparse context set, relaxing fast in and
+ * slower out when the member changes.
  */
 
 import * as THREE from 'three';
@@ -72,12 +72,14 @@ export type FamilyMode = 'hidden' | 'neighbours' | 'family';
 /** Highlight kernel width as a fraction of the family's parameter range. */
 const NEIGHBOUR_SIGMA = 0.05;
 /** Alpha of the nearest neighbours' trail; the current member itself is drawn separately. */
-const NEIGHBOUR_PEAK = 0.8;
+const NEIGHBOUR_PEAK = 0.55;
 /** About this many members are drawn as the family's context in 'family' mode. */
 const SPARSE_COUNT = 40;
-const SPARSE_ALPHA = 0.45;
-/** Length of the neighbours' trail behind the spacecraft, in rad of true anomaly. */
-const TRAIL_LENGTH = 1.2;
+const SPARSE_ALPHA = 0.4;
+/** Spacecraft trail: length as a fraction of the period, core and glow widths in CSS pixels at the craft. */
+const TRAIL_FRACTION = 0.3;
+const TRAIL_CORE_PX = 6;
+const TRAIL_GLOW_PX = 22;
 /** Time constants of the alpha relaxation: fast in, slower out, so the trail fades behind. */
 const RISE_MS = 60;
 const DECAY_MS = 320;
@@ -158,7 +160,13 @@ export class OrbitViewer {
   private fadeLast = 0;
   private fadeRaf = 0;
 
-  private orbit: THREE.Line; // trail up to the current epoch
+  private orbit: THREE.Line; // crisp centre line of the trail
+  private trailCore: THREE.Mesh; // tapered ribbon in the member colour
+  private trailGlow: THREE.Mesh; // wider additive halo under it
+  private trailPts: Float32Array = new Float32Array(0); // x,y per trail point, craft first
+  private trailT: Float32Array = new Float32Array(0); // 0 at the craft, 1 at the trail's end
+  private trailCount = 0;
+  private memberRgb = [1, 1, 1];
   private ghost: THREE.Line; // the current member's complete orbit
   private family: THREE.LineSegments; // other members, coloured by parameter with per-vertex alpha
   private craft: THREE.Points;
@@ -211,7 +219,14 @@ export class OrbitViewer {
     );
     this.family.visible = false;
     this.ghost = line('#d0d0d0', 0.8, 2); // the current member's complete orbit, recoloured per member
-    this.orbit = line('#ffffff', 1, 2); // the trail, recoloured per member
+    this.orbit = line('#ffffff', 1, 2); // the trail's centre line, recoloured per member
+    const ribbon = (blending: THREE.Blending) =>
+      new THREE.Mesh(
+        new THREE.BufferGeometry(),
+        new THREE.MeshBasicMaterial({ vertexColors: true, transparent: true, depthTest: false, depthWrite: false, blending, side: THREE.DoubleSide }),
+      );
+    this.trailGlow = ribbon(THREE.AdditiveBlending);
+    this.trailCore = ribbon(THREE.NormalBlending);
     this.primaryTrail = line(this.palette.primary, 0.3, 2);
     this.secondaryTrail = line(this.palette.secondary, 0.3, 2);
     this.craft = points(this.palette.craft, 9, tex, 1);
@@ -226,6 +241,8 @@ export class OrbitViewer {
       this.primaryTrail,
       this.secondaryTrail,
       this.ghost,
+      this.trailGlow,
+      this.trailCore,
       this.orbit,
       this.primary,
       this.secondary,
@@ -279,6 +296,17 @@ export class OrbitViewer {
       }
       // one extra vertex for the interpolated spacecraft position
       this.orbit.geometry.setAttribute('position', new THREE.BufferAttribute(new Float32Array(3 * (m + 1)), 3));
+      const P = m + 1;
+      this.trailPts = new Float32Array(2 * P);
+      this.trailT = new Float32Array(P);
+      const index: number[] = [];
+      for (let i = 0; i < P - 1; i++) index.push(2 * i, 2 * i + 1, 2 * i + 2, 2 * i + 1, 2 * i + 3, 2 * i + 2);
+      for (const r of [this.trailCore, this.trailGlow]) {
+        r.geometry.setAttribute('position', new THREE.BufferAttribute(new Float32Array(6 * P), 3));
+        r.geometry.setAttribute('color', new THREE.BufferAttribute(new Float32Array(8 * P), 4));
+        r.geometry.setIndex(index);
+        r.frustumCulled = false;
+      }
     }
     this.recompute();
     if (changed) this.focusFamily(false);
@@ -439,48 +467,21 @@ export class OrbitViewer {
     this.fadeRaf = requestAnimationFrame(step);
   }
 
-  /**
-   * Writes vertex alphas: each member sits at its constant context level, and a
-   * member in the current neighbourhood also carries a trail just behind the
-   * spacecraft, weighted by its neighbourhood alpha and a window over how far
-   * behind the current true anomaly each of its samples lies.
-   */
+  /** Writes per-member alphas (context level or neighbourhood weight, whichever is larger) into the colour attribute. */
   private writeAlpha(): void {
     const t = this.tracks;
     const attr = this.family.geometry.getAttribute('color') as THREE.BufferAttribute | undefined;
     if (!t || !attr) return;
     const col = attr.array as Float32Array;
-    const m = t.samples;
-    const per = (m - 1) * 8;
-    const period = this.fRel.length ? this.fRel[this.fRel.length - 1] : 2 * Math.PI;
-    const fNow = this.fNow;
+    const per = (t.samples - 1) * 8;
     let dirty = false;
     for (let i = 0; i < t.count; i++) {
-      const band = this.alphaNow[i];
-      const base = this.baseAlpha[i];
+      const a = Math.max(this.baseAlpha[i], this.alphaNow[i]);
+      if (this.written[i] === a) continue;
       const start = i * per;
-      if (band > 0.01) {
-        const f = t.anomalies.subarray(i * m, (i + 1) * m);
-        for (let k = 0; k < m; k++) {
-          let d = fNow - f[k];
-          if (d < 0) d += period;
-          let w = 0;
-          if (d < TRAIL_LENGTH) {
-            const u = d / TRAIL_LENGTH;
-            w = 1 - u * u * (3 - 2 * u); // smoothstep from 1 at the craft to 0 at the trail's end
-          }
-          const a = Math.max(base, band * w);
-          // sample k ends segment k-1 and starts segment k
-          if (k > 0) col[start + (k - 1) * 8 + 7] = a;
-          if (k < m - 1) col[start + k * 8 + 3] = a;
-        }
-        this.written[i] = -1;
-        dirty = true;
-      } else if (this.written[i] !== base) {
-        for (let c = start + 3; c < start + per; c += 4) col[c] = base;
-        this.written[i] = base;
-        dirty = true;
-      }
+      for (let c = start + 3; c < start + per; c += 4) col[c] = a;
+      this.written[i] = a;
+      dirty = true;
     }
     if (dirty) attr.needsUpdate = true;
   }
@@ -490,6 +491,9 @@ export class OrbitViewer {
     const css = this.memberColor();
     (this.orbit.material as THREE.LineBasicMaterial).color.set(css);
     (this.ghost.material as THREE.LineBasicMaterial).color.set(css);
+    const r = this.paramRange;
+    const u = r && r[1] > r[0] ? (this.sys.e - r[0]) / (r[1] - r[0]) : 0.5;
+    colormap(this.spec().cmap, u, this.memberRgb);
   }
 
   /** Recomputes the transformed member track and body trails for the current frame. */
@@ -522,21 +526,56 @@ export class OrbitViewer {
     const f = this.fRel;
     const fr = Math.max(f[0], Math.min(f[m - 1], fRel));
     this.fNow = fr;
-    this.writeAlpha(); // the neighbours' trail follows the spacecraft
     const k = segmentIndex(f, fr);
     const span = f[k + 1] - f[k];
     const u = span > 0 ? (fr - f[k]) / span : 0;
     const x = this.xyz[3 * k] + (this.xyz[3 * k + 3] - this.xyz[3 * k]) * u;
     const y = this.xyz[3 * k + 1] + (this.xyz[3 * k + 4] - this.xyz[3 * k + 1]) * u;
 
-    const trail = this.orbit.geometry.getAttribute('position') as THREE.BufferAttribute;
-    const arr = trail.array as Float32Array;
-    arr.set(this.xyz.subarray(0, 3 * (k + 1)));
-    arr[3 * (k + 1)] = x;
-    arr[3 * (k + 1) + 1] = y;
-    arr[3 * (k + 1) + 2] = 0;
-    trail.needsUpdate = true;
-    this.orbit.geometry.setDrawRange(0, k + 2);
+    // trail points, craft first, walking back along the orbit (wrapping, since it is periodic)
+    const period = f[m - 1] - f[0];
+    const L = TRAIL_FRACTION * period;
+    const pts = this.trailPts;
+    const tt = this.trailT;
+    let n = 0;
+    pts[0] = x;
+    pts[1] = y;
+    tt[0] = 0;
+    n = 1;
+    let idx = k;
+    let wrapped = false;
+    while (n < m) {
+      const behind = (wrapped ? fr + period : fr) - f[idx];
+      if (behind >= L) {
+        // end the trail exactly at length L by interpolating toward this sample
+        const prev = tt[n - 1] * L;
+        const w = (L - prev) / Math.max(1e-12, behind - prev);
+        pts[2 * n] = pts[2 * n - 2] + (this.xyz[3 * idx] - pts[2 * n - 2]) * w;
+        pts[2 * n + 1] = pts[2 * n - 1] + (this.xyz[3 * idx + 1] - pts[2 * n - 1]) * w;
+        tt[n] = 1;
+        n++;
+        break;
+      }
+      pts[2 * n] = this.xyz[3 * idx];
+      pts[2 * n + 1] = this.xyz[3 * idx + 1];
+      tt[n] = behind / L;
+      n++;
+      if (idx === 0) {
+        if (wrapped) break;
+        wrapped = true;
+        idx = m - 2;
+      } else idx--;
+    }
+    this.trailCount = n;
+    const line = this.orbit.geometry.getAttribute('position') as THREE.BufferAttribute;
+    const larr = line.array as Float32Array;
+    for (let i = 0; i < n; i++) {
+      larr[3 * i] = pts[2 * i];
+      larr[3 * i + 1] = pts[2 * i + 1];
+      larr[3 * i + 2] = 0;
+    }
+    line.needsUpdate = true;
+    this.orbit.geometry.setDrawRange(0, n);
     this.ghost.visible = this.showGhost;
 
     const set = (p: THREE.Points, px: number, py: number) => {
@@ -612,7 +651,65 @@ export class OrbitViewer {
     return { x0: cx - hw, x1: cx + hw, y0: cy - hh, y1: cy + hh };
   }
 
+  /** World units per CSS pixel through the orthographic camera. */
+  private pixelSize(): number {
+    const w = Math.max(1, this.host.getBoundingClientRect().width);
+    return (this.camera.right - this.camera.left) / (this.camera.zoom * w);
+  }
+
+  /** Lays the trail ribbons out from the trail points at the current zoom: width and alpha taper along the trail. */
+  private layoutRibbon(): void {
+    const n = this.trailCount;
+    const px = this.pixelSize();
+    const [r, g, b] = this.memberRgb;
+    for (const [mesh, widthPx, alphaScale] of [
+      [this.trailCore, TRAIL_CORE_PX, 1],
+      [this.trailGlow, TRAIL_GLOW_PX, 0.32],
+    ] as [THREE.Mesh, number, number][]) {
+      const pos = mesh.geometry.getAttribute('position') as THREE.BufferAttribute | undefined;
+      const col = mesh.geometry.getAttribute('color') as THREE.BufferAttribute | undefined;
+      if (!pos || !col || n < 2) {
+        mesh.visible = false;
+        continue;
+      }
+      mesh.visible = true;
+      const P = pos.array as Float32Array;
+      const C = col.array as Float32Array;
+      const pts = this.trailPts;
+      for (let i = 0; i < n; i++) {
+        const i0 = Math.max(0, i - 1);
+        const i1 = Math.min(n - 1, i + 1);
+        let tx = pts[2 * i1] - pts[2 * i0];
+        let ty = pts[2 * i1 + 1] - pts[2 * i0 + 1];
+        const len = Math.hypot(tx, ty) || 1;
+        tx /= len;
+        ty /= len;
+        const t = this.trailT[i];
+        const taper = Math.pow(1 - t, 0.8);
+        const half = 0.5 * widthPx * px * taper;
+        const nx = -ty * half;
+        const ny = tx * half;
+        const x = pts[2 * i];
+        const y = pts[2 * i + 1];
+        P[6 * i] = x + nx;
+        P[6 * i + 1] = y + ny;
+        P[6 * i + 2] = 0;
+        P[6 * i + 3] = x - nx;
+        P[6 * i + 4] = y - ny;
+        P[6 * i + 5] = 0;
+        const a = alphaScale * Math.pow(1 - t, 1.6);
+        C[8 * i] = C[8 * i + 4] = r;
+        C[8 * i + 1] = C[8 * i + 5] = g;
+        C[8 * i + 2] = C[8 * i + 6] = b;
+        C[8 * i + 3] = C[8 * i + 7] = a;
+      }
+      pos.needsUpdate = col.needsUpdate = true;
+      mesh.geometry.setDrawRange(0, (n - 1) * 6);
+    }
+  }
+
   render(): void {
+    this.layoutRibbon();
     this.renderer.render(this.scene, this.camera);
     if (!this.threeD) this.drawOverlay();
   }
