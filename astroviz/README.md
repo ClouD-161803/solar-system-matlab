@@ -81,11 +81,11 @@ which is the path for ephemeris-scale data.
   members coloured by parameter with a colourbar (one colormap per frame, as
   in the reference figures), Okabe-Ito markers, fps counter, keyboard (space,
   arrows, shift+arrows).
-- The current member's trail and full orbit take its colormap colour. The
-  other members are drawn with per-vertex alpha from a Gaussian kernel over
-  parameter distance, so the neighbourhood of the current member is bright
-  and fades with distance. When the member changes the band cross-fades over
-  260 ms and a pulse ripples outward through the family over 700 ms.
+- The current member's trail and full orbit take its colormap colour. About
+  forty members are drawn dimly as context, and every member near the current
+  one is lit by a Gaussian kernel over parameter distance. Alphas relax
+  asymmetrically (about 60 ms in, 320 ms out), so members just visited trail
+  behind the direction of travel and fade. Always on; there is no toggle.
 - Camera policy: a panel is fitted when opened and when the family changes;
   the parameter slider and branch toggle never move it.
 

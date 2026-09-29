@@ -16,8 +16,10 @@
  * in the frame's colormap. The other members are drawn with per-vertex alpha:
  * a kernel over parameter distance brightens the neighbours of the current
  * member and fades with distance, so sliding through the family reads as a
- * moving band of colour. When the member changes, the band cross-fades and a
- * pulse travels outward from the new member through the family and dies away.
+ * moving band of colour. A sparse subset of the family is drawn dimly behind
+ * it for context. Alphas rise almost at once when a member enters the band
+ * and decay with a short time constant when it leaves, so the members just
+ * visited trail behind the direction of travel and fade.
  */
 
 import * as THREE from 'three';
@@ -65,18 +67,18 @@ export interface FamilyTracks {
   f0: number;
 }
 
-export type FamilyMode = 'hidden' | 'neighbours' | 'all';
+export type FamilyMode = 'hidden' | 'neighbours' | 'family';
 
 /** Highlight kernel width as a fraction of the family's parameter range. */
 const NEIGHBOUR_SIGMA = 0.05;
 /** Alpha of the nearest neighbours; the current member itself is drawn separately. */
 const NEIGHBOUR_PEAK = 0.6;
-/** Cross-fade time when the current member changes, in ms. */
-const FADE_MS = 260;
-/** Ripple: duration, peak alpha added, pulse width as a fraction of the range. */
-const RIPPLE_MS = 700;
-const RIPPLE_AMPLITUDE = 0.55;
-const RIPPLE_WIDTH = 0.04;
+/** About this many members are drawn dimly as the family's context in 'family' mode. */
+const SPARSE_COUNT = 40;
+const SPARSE_ALPHA = 0.3;
+/** Time constants of the alpha relaxation: fast in, slower out, so the trail fades behind. */
+const RISE_MS = 60;
+const DECAY_MS = 320;
 
 function discTexture(): THREE.Texture {
   const c = document.createElement('canvas');
@@ -122,10 +124,6 @@ function niceStep(range: number, target = 6): number {
   return step * mag;
 }
 
-function easeInOut(t: number): number {
-  return t < 0.5 ? 2 * t * t : 1 - Math.pow(-2 * t + 2, 2) / 2;
-}
-
 export class OrbitViewer {
   readonly host: HTMLElement;
   readonly canvas: HTMLCanvasElement;
@@ -153,10 +151,8 @@ export class OrbitViewer {
   private alphaNow = new Float32Array(0); // per member, as drawn
   private alphaFrom = new Float32Array(0); // per member, at the start of the transition
   private alphaTo = new Float32Array(0); // per member, target
-  private fadeStart = 0;
+  private fadeLast = 0;
   private fadeRaf = 0;
-  private rippleOrigin = 0; // parameter value the pulse spreads from
-  private rippleOn = false;
 
   private orbit: THREE.Line; // trail up to the current epoch
   private ghost: THREE.Line; // the current member's complete orbit
@@ -281,7 +277,7 @@ export class OrbitViewer {
       this.orbit.geometry.setAttribute('position', new THREE.BufferAttribute(new Float32Array(3 * (m + 1)), 3));
     }
     this.recompute();
-    if (changed) this.focusFamily(false, true);
+    if (changed) this.focusFamily(false);
     if (refit) this.fit();
   }
 
@@ -384,24 +380,25 @@ export class OrbitViewer {
   }
 
   /**
-   * Target alphas for the current member's neighbourhood, then either applies
-   * them at once or starts the transition: an eased cross-fade, plus, when
-   * `ripple` is set, a pulse spreading outward from the new member.
+   * Target alphas for the current member's neighbourhood: a Gaussian band over
+   * parameter distance on top of the sparse context set, then either applied at
+   * once or reached by asymmetric relaxation (fast in, slower out).
    */
-  private focusFamily(immediate = false, ripple = false): void {
+  private focusFamily(immediate = false): void {
     const t = this.tracks;
     const r = this.paramRange;
     if (!t || !r) return;
     const n = t.count;
     const range = Math.max(1e-9, r[1] - r[0]);
     const sigma = NEIGHBOUR_SIGMA * range;
-    const base = this.familyMode === 'all' ? Math.min(0.35, Math.max(0.05, 10 / n)) : 0;
+    const stride = Math.max(1, Math.round(n / SPARSE_COUNT));
     let current = -1;
     for (let i = 0; i < n; i++) if (t.params[i] === this.sys.e) current = i;
     for (let i = 0; i < n; i++) {
+      const sparse = this.familyMode === 'family' && (i % stride === 0 || i === n - 1);
       const d = (t.params[i] - this.sys.e) / sigma;
-      const w = Math.exp(-d * d);
-      this.alphaTo[i] = i === current ? 0 : base + (NEIGHBOUR_PEAK - base) * w;
+      const band = NEIGHBOUR_PEAK * Math.exp(-d * d);
+      this.alphaTo[i] = i === current ? 0 : Math.max(sparse ? SPARSE_ALPHA : 0, band);
     }
     if (this.familyMode === 'hidden') this.alphaTo.fill(0);
     cancelAnimationFrame(this.fadeRaf);
@@ -410,35 +407,24 @@ export class OrbitViewer {
       this.writeAlpha();
       return;
     }
-    this.alphaFrom.set(this.alphaNow);
-    this.fadeStart = performance.now();
-    this.rippleOn = ripple;
-    this.rippleOrigin = this.sys.e;
-    const width = RIPPLE_WIDTH * range;
-    const speed = range / (RIPPLE_MS * 0.8); // the pulse crosses the whole family before it dies
-    const total = ripple ? Math.max(FADE_MS, RIPPLE_MS) : FADE_MS;
+    this.fadeLast = performance.now();
     const step = (now: number) => {
-      const dt = now - this.fadeStart;
-      const s = easeInOut(Math.min(1, dt / FADE_MS));
-      const rp = Math.min(1, dt / RIPPLE_MS);
-      const envelope = this.rippleOn ? RIPPLE_AMPLITUDE * (1 - rp) * (1 - rp) : 0;
-      const front = speed * dt;
+      const dt = Math.max(0, now - this.fadeLast);
+      this.fadeLast = now;
+      const up = 1 - Math.exp(-dt / RISE_MS);
+      const down = 1 - Math.exp(-dt / DECAY_MS);
+      let maxDiff = 0;
       for (let i = 0; i < n; i++) {
-        let a = this.alphaFrom[i] + (this.alphaTo[i] - this.alphaFrom[i]) * s;
-        if (envelope > 0 && i !== current) {
-          const d = (Math.abs(t.params[i] - this.rippleOrigin) - front) / width;
-          a += envelope * Math.exp(-d * d);
-        }
-        this.alphaNow[i] = Math.min(1, a);
+        const a = this.alphaNow[i];
+        const b = this.alphaTo[i];
+        const next = a + (b - a) * (b > a ? up : down);
+        this.alphaNow[i] = next;
+        maxDiff = Math.max(maxDiff, Math.abs(b - next));
       }
+      if (maxDiff < 0.004) this.alphaNow.set(this.alphaTo);
       this.writeAlpha();
       this.render();
-      if (dt < total) this.fadeRaf = requestAnimationFrame(step);
-      else {
-        this.alphaNow.set(this.alphaTo);
-        this.writeAlpha();
-        this.render();
-      }
+      if (maxDiff >= 0.004) this.fadeRaf = requestAnimationFrame(step);
     };
     this.fadeRaf = requestAnimationFrame(step);
   }

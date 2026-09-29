@@ -135,7 +135,7 @@ export class AstroViewerElement extends HTMLElement {
   private playing = false;
   private speed = 1;
   private spacing: Spacing = 'anomaly';
-  private ghostMode: FamilyMode = 'neighbours';
+  private readonly ghostMode: FamilyMode = 'family'; // neighbours plus a sparse context set, always on
   private progress = 0; // fraction of one period
   private raf = 0;
   private showGhost = true;
@@ -211,27 +211,7 @@ export class AstroViewerElement extends HTMLElement {
     this.slider.addEventListener('input', () => this.setMember(Number(this.slider.value)));
     this.sliderOut = document.createElement('span');
     sliderField.append(k, this.slider, this.sliderOut);
-    const ghostField = document.createElement('label');
-    ghostField.className = 'field';
-    const gk = document.createElement('span');
-    gk.className = 'k';
-    gk.textContent = 'members';
-    ghostField.append(
-      gk,
-      select<FamilyMode>(
-        [
-          { id: 'hidden', label: 'hidden' },
-          { id: 'neighbours', label: 'neighbours' },
-          { id: 'all', label: 'all, neighbours bright' },
-        ],
-        this.ghostMode,
-        (v) => {
-          this.ghostMode = v;
-          this.applyFamily();
-        },
-      ),
-    );
-    controls.append(this.groupSeg.el, this.branchSeg.el, sliderField, this.frameSeg.el, ghostField);
+    controls.append(this.groupSeg.el, this.branchSeg.el, sliderField, this.frameSeg.el);
 
     this.stage = document.createElement('div');
     this.stage.className = 'stage';
