@@ -106,8 +106,9 @@ export class OrbitViewer {
   private ro: ResizeObserver;
   private userMoved = false;
 
-  constructor(host: HTMLElement) {
+  constructor(host: HTMLElement, frame: FrameId = 'rotating_pulsating') {
     this.host = host;
+    this.frame = frame;
     this.canvas = document.createElement('canvas');
     this.overlay = document.createElement('canvas');
     for (const c of [this.canvas, this.overlay]) {
@@ -180,8 +181,12 @@ export class OrbitViewer {
     return this.fRel.length ? this.fRel[this.index] : 0;
   }
 
-  /** Loads a rotating-pulsating trajectory: M (x, y) pairs and M relative true anomalies. */
-  setTrajectory(xy: Float32Array, fRel: Float64Array, sys: ER3BPSystem): void {
+  /**
+   * Loads a rotating-pulsating trajectory: M (x, y) pairs and M relative true anomalies.
+   * The camera is left where it is unless `refit` is set, so sweeping a parameter
+   * slider keeps a steady view; callers fit explicitly on dataset changes.
+   */
+  setTrajectory(xy: Float32Array, fRel: Float64Array, sys: ER3BPSystem, refit = false): void {
     this.xy = xy;
     this.fRel = fRel;
     this.sys = sys;
@@ -194,7 +199,7 @@ export class OrbitViewer {
     }
     this.index = Math.min(this.index, m - 1);
     this.recompute();
-    this.fit();
+    if (refit) this.fit();
   }
 
   setFrame(frame: FrameId): void {
@@ -355,7 +360,7 @@ export class OrbitViewer {
       g.moveTo(px, 0);
       g.lineTo(px, H);
       g.stroke();
-      g.fillText((Math.abs(x) < 1e-12 ? 0 : x).toFixed(dx), px, H - 30);
+      if (px > 56) g.fillText((Math.abs(x) < 1e-12 ? 0 : x).toFixed(dx), px, H - 30); // keep clear of the y labels
     }
     g.textAlign = 'right';
     g.textBaseline = 'middle';
@@ -365,7 +370,7 @@ export class OrbitViewer {
       g.moveTo(0, py);
       g.lineTo(W, py);
       g.stroke();
-      g.fillText((Math.abs(y) < 1e-12 ? 0 : y).toFixed(dy), 44, py);
+      if (py < H - 40 && py > 22) g.fillText((Math.abs(y) < 1e-12 ? 0 : y).toFixed(dy), 44, py); // keep clear of the x labels and title
     }
     // axis lines through the origin
     g.strokeStyle = this.palette.axis;

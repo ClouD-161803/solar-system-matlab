@@ -6,12 +6,17 @@
  *   title  page title shown in the header
  *
  * It owns the controls (family tabs, branch toggle, parameter slider, frame
- * selector, transport) and delegates drawing to OrbitViewer. Playback advances
- * a frame index per animation tick; drawing is always showFrame(index).
+ * toggles, transport) and a grid of synchronized OrbitViewer panels, one per
+ * enabled frame. Playback advances one shared frame index per animation tick;
+ * every panel draws showFrame(index).
+ *
+ * Camera policy: a panel is fitted when it is created and when the family
+ * changes. Moving the parameter slider or switching branch never moves the
+ * camera, so the eye can follow how the orbit deforms.
  */
 
 import { Container, type DatasetRecord, loadContainer } from './container';
-import { FRAMES, type FrameId, elapsedTime } from './frames';
+import { FRAMES, type ER3BPSystem, type FrameId, elapsedTime } from './frames';
 import { OrbitViewer } from './viewer';
 
 interface FamilyDataset extends DatasetRecord {
@@ -29,6 +34,7 @@ const STYLE = `
 :host { display: block; position: relative; background: #000; color: #d8d8d8;
   font: 13px/1.4 "Helvetica Neue", Arial, sans-serif; overflow: hidden; }
 * { box-sizing: border-box; }
+[hidden] { display: none !important; }
 .root { position: absolute; inset: 0; display: grid; grid-template-rows: auto auto 1fr auto; }
 header { display: flex; flex-wrap: wrap; align-items: baseline; gap: 6px 18px; padding: 10px 14px 4px; }
 header h1 { font-size: 17px; font-weight: 600; margin: 0; letter-spacing: 0.01em; }
@@ -38,12 +44,15 @@ header .caption { color: #9a9a9a; font-variant-numeric: tabular-nums; }
 .seg button { background: #0d0d0d; color: #bbb; border: 0; padding: 5px 11px; cursor: pointer; font: inherit; }
 .seg button + button { border-left: 1px solid #333; }
 .seg button[aria-pressed="true"] { background: #2b2b2b; color: #fff; }
+.seg.toggles button[aria-pressed="true"] { background: #3a2a14; color: #ffd9a8; box-shadow: inset 0 -2px 0 #f5a142; }
 .seg button:hover { color: #fff; }
 label.field { display: inline-flex; align-items: center; gap: 8px; }
 label.field span.k { color: #9a9a9a; }
 input[type=range] { accent-color: #f5a142; width: 220px; }
 input[type=range].scrub { flex: 1; min-width: 160px; width: auto; }
-.stage { position: relative; min-height: 120px; }
+.stage { position: relative; min-height: 120px; display: grid; gap: 2px; background: #141414; }
+.panel { position: relative; background: #000; min-width: 0; min-height: 0; }
+.stage .hint { position: absolute; inset: 0; display: grid; place-items: center; color: #777; background: #000; }
 footer { display: flex; align-items: center; gap: 12px; padding: 8px 14px 10px; border-top: 1px solid #1a1a1a; }
 footer button { background: #0d0d0d; color: #ddd; border: 1px solid #333; border-radius: 6px; padding: 5px 12px; cursor: pointer; font: inherit; min-width: 68px; }
 footer button:hover { border-color: #666; color: #fff; }
@@ -55,9 +64,15 @@ select { background: #0d0d0d; color: #ddd; border: 1px solid #333; border-radius
 .warn { color: #e0a24a; }
 `;
 
-function seg<T extends string>(items: { id: T; label: string }[], onPick: (id: T) => void): { el: HTMLDivElement; set(id: T): void } {
+interface Seg<T extends string> {
+  el: HTMLDivElement;
+  set(id: T): void;
+  setPressed(id: T, on: boolean): void;
+}
+
+function seg<T extends string>(items: { id: T; label: string }[], onPick: (id: T) => void, toggles = false): Seg<T> {
   const el = document.createElement('div');
-  el.className = 'seg';
+  el.className = toggles ? 'seg toggles' : 'seg';
   const buttons = new Map<T, HTMLButtonElement>();
   for (const it of items) {
     const b = document.createElement('button');
@@ -73,35 +88,55 @@ function seg<T extends string>(items: { id: T; label: string }[], onPick: (id: T
     set(id: T) {
       for (const [k, b] of buttons) b.setAttribute('aria-pressed', String(k === id));
     },
+    setPressed(id: T, on: boolean) {
+      buttons.get(id)?.setAttribute('aria-pressed', String(on));
+    },
   };
 }
 
+/** Grid columns for n panels: 1, 2, 3, 2x2, 3+2. */
+function columnsFor(n: number): number {
+  if (n <= 3) return Math.max(1, n);
+  if (n === 4) return 2;
+  return 3;
+}
+
 export class AstroViewerElement extends HTMLElement {
-  private viewer: OrbitViewer | null = null;
   private container: Container | null = null;
   private families: FamilyDataset[] = [];
   private groups: string[] = [];
   private group = '';
   private branch = 'periapsis';
   private member = 0;
-  private frame: FrameId = 'rotating_pulsating';
   private playing = false;
   private speed = 1;
   private cursor = 0; // fractional frame index while playing
   private raf = 0;
+  private showGhost = true;
+  private threeD = false;
+
+  // current trajectory, shared by all panels
+  private xy: Float32Array = new Float32Array(0);
+  private fRel: Float64Array = new Float64Array(0);
+  private sys: ER3BPSystem = { mu: 0.5, e: 0, f0: 0 };
+
+  // panels keyed by frame, in FRAMES order
+  private panels = new Map<FrameId, { host: HTMLDivElement; viewer: OrbitViewer }>();
 
   // UI handles
   private titleEl!: HTMLHeadingElement;
   private captionEl!: HTMLSpanElement;
-  private groupSeg!: ReturnType<typeof seg<string>>;
-  private branchSeg!: ReturnType<typeof seg<string>>;
-  private frameSeg!: ReturnType<typeof seg<FrameId>>;
+  private groupSeg!: Seg<string>;
+  private branchSeg!: Seg<string>;
+  private frameSeg!: Seg<FrameId>;
   private slider!: HTMLInputElement;
   private sliderOut!: HTMLSpanElement;
   private scrub!: HTMLInputElement;
   private playBtn!: HTMLButtonElement;
   private readout!: HTMLSpanElement;
   private statusEl!: HTMLDivElement;
+  private stage!: HTMLDivElement;
+  private hint!: HTMLDivElement;
 
   connectedCallback(): void {
     const root = this.attachShadow({ mode: 'open' });
@@ -131,7 +166,8 @@ export class AstroViewerElement extends HTMLElement {
     );
     this.frameSeg = seg<FrameId>(
       FRAMES.map((f) => ({ id: f.id, label: f.label })),
-      (f) => this.setFrame(f),
+      (f) => this.togglePanel(f),
+      true,
     );
     const sliderField = document.createElement('label');
     sliderField.className = 'field';
@@ -147,12 +183,16 @@ export class AstroViewerElement extends HTMLElement {
     sliderField.append(k, this.slider, this.sliderOut);
     controls.append(this.groupSeg.el, this.branchSeg.el, sliderField, this.frameSeg.el);
 
-    const stage = document.createElement('div');
-    stage.className = 'stage';
+    this.stage = document.createElement('div');
+    this.stage.className = 'stage';
     this.statusEl = document.createElement('div');
     this.statusEl.className = 'status';
     this.statusEl.textContent = 'loading…';
-    stage.appendChild(this.statusEl);
+    this.hint = document.createElement('div');
+    this.hint.className = 'hint';
+    this.hint.textContent = 'select one or more frames above';
+    this.hint.hidden = true;
+    this.stage.append(this.statusEl, this.hint);
 
     const footer = document.createElement('footer');
     this.playBtn = document.createElement('button');
@@ -167,8 +207,7 @@ export class AstroViewerElement extends HTMLElement {
     this.scrub.addEventListener('input', () => {
       this.pause();
       this.cursor = Number(this.scrub.value);
-      this.viewer?.showFrame(this.cursor);
-      this.updateReadout();
+      this.drawAll();
     });
     const speed = document.createElement('select');
     for (const s of [0.25, 0.5, 1, 2, 4]) {
@@ -180,21 +219,23 @@ export class AstroViewerElement extends HTMLElement {
     }
     speed.addEventListener('change', () => (this.speed = Number(speed.value)));
     const ghost = this.checkbox('full orbit', true, (on) => {
-      if (this.viewer) {
-        this.viewer.showGhost = on;
-        this.viewer.showFrame(this.viewer.frameIndex);
-      }
+      this.showGhost = on;
+      for (const p of this.panels.values()) p.viewer.showGhost = on;
+      this.drawAll();
     });
-    const threeD = this.checkbox('3D orbit camera', false, (on) => this.viewer?.setThreeD(on));
+    const threeD = this.checkbox('3D orbit camera', false, (on) => {
+      this.threeD = on;
+      for (const p of this.panels.values()) p.viewer.setThreeD(on);
+    });
     const fit = document.createElement('button');
     fit.type = 'button';
     fit.textContent = 'fit';
-    fit.addEventListener('click', () => this.viewer?.fit());
+    fit.addEventListener('click', () => this.fitAll());
     this.readout = document.createElement('span');
     this.readout.className = 'readout';
     footer.append(this.playBtn, this.scrub, speed, ghost, threeD, fit, this.readout);
 
-    wrap.append(header, controls, stage, footer);
+    wrap.append(header, controls, this.stage, footer);
 
     this.tabIndex = 0;
     this.addEventListener('keydown', (ev) => this.onKey(ev));
@@ -208,8 +249,6 @@ export class AstroViewerElement extends HTMLElement {
       .then((c) => {
         this.container = c;
         this.statusEl.remove();
-        this.viewer = new OrbitViewer(stage);
-        this.viewer.setFrame(this.frame);
         this.populate();
       })
       .catch((err: unknown) => {
@@ -219,7 +258,8 @@ export class AstroViewerElement extends HTMLElement {
 
   disconnectedCallback(): void {
     this.pause();
-    this.viewer?.dispose();
+    for (const p of this.panels.values()) p.viewer.dispose();
+    this.panels.clear();
   }
 
   private checkbox(label: string, checked: boolean, onChange: (on: boolean) => void): HTMLLabelElement {
@@ -244,7 +284,58 @@ export class AstroViewerElement extends HTMLElement {
     this.groupSeg.el.replaceWith(gs.el);
     this.groupSeg = gs;
     if (this.groups.length) this.setGroup(this.groups[0]);
+    const initial = (this.getAttribute('frames') ?? 'rotating_pulsating').split(/[\s,]+/) as FrameId[];
+    for (const f of initial) if (FRAMES.some((s) => s.id === f)) this.togglePanel(f);
   }
+
+  // ---- panels -------------------------------------------------------------
+
+  private togglePanel(frame: FrameId): void {
+    const existing = this.panels.get(frame);
+    if (existing) {
+      existing.viewer.dispose();
+      existing.host.remove();
+      this.panels.delete(frame);
+      this.frameSeg.setPressed(frame, false);
+    } else {
+      const host = document.createElement('div');
+      host.className = 'panel';
+      this.stage.appendChild(host); // layout() sorts panels into FRAMES order
+      const viewer = new OrbitViewer(host, frame);
+      viewer.showGhost = this.showGhost;
+      viewer.setThreeD(this.threeD);
+      this.panels.set(frame, { host, viewer });
+      this.frameSeg.setPressed(frame, true);
+      if (this.fRel.length) {
+        viewer.setTrajectory(this.xy, this.fRel, this.sys, true);
+        viewer.showFrame(this.cursor);
+      }
+    }
+    this.layout();
+  }
+
+  private layout(): void {
+    const n = this.panels.size;
+    this.hint.hidden = n > 0;
+    this.stage.style.gridTemplateColumns = `repeat(${columnsFor(n)}, minmax(0, 1fr))`;
+    this.stage.style.gridAutoRows = 'minmax(0, 1fr)';
+    // one panel is sorted first in FRAMES order; keep the DOM in that order
+    const order = FRAMES.map((f) => f.id);
+    const sorted = [...this.panels.entries()].sort((a, b) => order.indexOf(a[0]) - order.indexOf(b[0]));
+    for (const [, p] of sorted) this.stage.appendChild(p.host);
+    for (const p of this.panels.values()) p.viewer.resize();
+  }
+
+  private fitAll(): void {
+    for (const p of this.panels.values()) p.viewer.fit();
+  }
+
+  private drawAll(): void {
+    for (const p of this.panels.values()) p.viewer.showFrame(this.cursor);
+    this.updateReadout();
+  }
+
+  // ---- dataset selection --------------------------------------------------
 
   private current(): FamilyDataset | undefined {
     return this.families.find((d) => d.group === this.group && d.branch === this.branch);
@@ -258,7 +349,7 @@ export class AstroViewerElement extends HTMLElement {
       if (any) this.branch = any.branch;
     }
     this.branchSeg.set(this.branch);
-    this.loadMember(0);
+    this.loadMember(0, { refit: true });
   }
 
   private setBranch(b: string): void {
@@ -280,23 +371,16 @@ export class AstroViewerElement extends HTMLElement {
         }
       }
     }
-    this.loadMember(idx);
-  }
-
-  private setFrame(f: FrameId): void {
-    this.frame = f;
-    this.frameSeg.set(f);
-    this.viewer?.setFrame(f);
-    this.updateReadout();
+    this.loadMember(idx, { keepCursor: true });
   }
 
   private setMember(i: number): void {
-    this.loadMember(i, true);
+    this.loadMember(i, { keepCursor: true });
   }
 
-  private loadMember(i: number, keepCursor = false): void {
+  private loadMember(i: number, opts: { keepCursor?: boolean; refit?: boolean } = {}): void {
     const d = this.current();
-    if (!d || !this.viewer) return;
+    if (!d) return;
     const c = this.container!;
     const params = c.f64(d.parameter.view);
     const fRel = c.f64(d.independent_variable.view);
@@ -304,18 +388,21 @@ export class AstroViewerElement extends HTMLElement {
     const info = c.viewInfo(d.positions.view);
     const m = info.shape[1];
     this.member = Math.max(0, Math.min(params.length - 1, i));
-    const xy = pos.subarray(this.member * m * 2, (this.member + 1) * m * 2);
+    this.xy = pos.subarray(this.member * m * 2, (this.member + 1) * m * 2);
+    this.fRel = fRel;
+    this.sys = { mu: d.system.mu, e: params[this.member], f0: d.system.f0 };
     this.slider.max = String(params.length - 1);
     this.slider.value = String(this.member);
     this.sliderOut.textContent = params[this.member].toFixed(4);
     this.scrub.max = String(m - 1);
-    if (!keepCursor) this.cursor = 0;
-    this.viewer.setTrajectory(xy, fRel, { mu: d.system.mu, e: params[this.member], f0: d.system.f0 });
-    this.viewer.showFrame(this.cursor);
-    this.scrub.value = String(Math.round(this.cursor));
+    if (!opts.keepCursor) this.cursor = 0;
+    this.cursor = Math.min(this.cursor, m - 1);
+    for (const p of this.panels.values()) p.viewer.setTrajectory(this.xy, this.fRel, this.sys, !!opts.refit);
+    this.drawAll();
     this.updateCaption();
-    this.updateReadout();
   }
+
+  // ---- readouts -----------------------------------------------------------
 
   private updateCaption(): void {
     const d = this.current();
@@ -332,16 +419,16 @@ export class AstroViewerElement extends HTMLElement {
   }
 
   private updateReadout(): void {
-    const v = this.viewer;
-    const d = this.current();
-    if (!v || !d) return;
-    const fr = v.fRelative;
-    const sys = v.system;
-    const tau = elapsedTime(sys.e, sys.f0, sys.f0 + fr);
-    this.readout.textContent =
-      `f − f₀ = ${fr.toFixed(2)} rad τ = ${tau.toFixed(2)} TU frame ${v.frameIndex}/${v.sampleCount - 1}`;
-    this.scrub.value = String(v.frameIndex);
+    const m = this.fRel.length;
+    if (!m) return;
+    const idx = Math.max(0, Math.min(m - 1, Math.round(this.cursor)));
+    const fr = this.fRel[idx];
+    const tau = elapsedTime(this.sys.e, this.sys.f0, this.sys.f0 + fr);
+    this.readout.textContent = `f − f₀ = ${fr.toFixed(2)} rad τ = ${tau.toFixed(2)} TU frame ${idx}/${m - 1}`;
+    this.scrub.value = String(idx);
   }
+
+  // ---- transport ----------------------------------------------------------
 
   private togglePlay(): void {
     if (this.playing) this.pause();
@@ -349,16 +436,15 @@ export class AstroViewerElement extends HTMLElement {
   }
 
   play(): void {
-    if (this.playing || !this.viewer) return;
+    if (this.playing || !this.fRel.length) return;
     this.playing = true;
     this.playBtn.textContent = 'pause';
     const tick = () => {
-      if (!this.playing || !this.viewer) return;
-      const m = this.viewer.sampleCount;
+      if (!this.playing) return;
+      const m = this.fRel.length;
       this.cursor += this.speed;
       if (this.cursor > m - 1) this.cursor -= m - 1;
-      this.viewer.showFrame(this.cursor);
-      this.updateReadout();
+      this.drawAll();
       this.raf = requestAnimationFrame(tick);
     };
     this.raf = requestAnimationFrame(tick);
@@ -371,8 +457,9 @@ export class AstroViewerElement extends HTMLElement {
   }
 
   private onKey(ev: KeyboardEvent): void {
-    if (!this.viewer) return;
-    const m = this.viewer.sampleCount;
+    const m = this.fRel.length;
+    if (!m) return;
+    const step = ev.shiftKey ? 10 : 1;
     switch (ev.key) {
       case ' ':
         ev.preventDefault();
@@ -381,16 +468,14 @@ export class AstroViewerElement extends HTMLElement {
       case 'ArrowRight':
         ev.preventDefault();
         this.pause();
-        this.cursor = (this.viewer.frameIndex + (ev.shiftKey ? 10 : 1)) % m;
-        this.viewer.showFrame(this.cursor);
-        this.updateReadout();
+        this.cursor = (Math.round(this.cursor) + step) % m;
+        this.drawAll();
         break;
       case 'ArrowLeft':
         ev.preventDefault();
         this.pause();
-        this.cursor = (this.viewer.frameIndex - (ev.shiftKey ? 10 : 1) + m) % m;
-        this.viewer.showFrame(this.cursor);
-        this.updateReadout();
+        this.cursor = (Math.round(this.cursor) - step + m) % m;
+        this.drawAll();
         break;
       case 'ArrowUp':
         ev.preventDefault();
