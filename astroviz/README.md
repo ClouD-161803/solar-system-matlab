@@ -91,6 +91,7 @@ which is the path for ephemeris-scale data.
 - Family members coloured by parameter with a colourbar (one colormap per
   frame, as in the reference figures), Okabe-Ito markers, fps counter,
   keyboard (space, arrows, shift+arrows; up and down step the eccentricity).
+  Each panel header has a home button that resets its view.
 - The spacecraft leaves a comet-style trail in the current member's colormap
   colour: a tapered ribbon sized in screen pixels (6 px core, 22 px additive
   glow at the craft) that thins and fades over 30% of the period behind it,

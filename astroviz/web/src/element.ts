@@ -130,6 +130,7 @@ input[type=range].scrub { flex: 1; min-width: 160px; width: auto; }
 .phead .seg, .phead .x { flex: 0 0 auto; }
 .phead .x { background: none; border: 0; color: #777; cursor: pointer; font: inherit; font-size: 14px; padding: 0 4px; }
 .phead .x:hover { color: #fff; }
+.phead .home { display: inline-flex; align-items: center; }
 .pbody { position: relative; flex: 1 1 0; min-height: 0; }
 .drop { position: absolute; inset: 0; background: rgba(230,159,0,0.18); border: 2px solid rgba(230,159,0,0.7); pointer-events: none; z-index: 2; }
 .drop.centre { background: rgba(86,180,233,0.16); border-color: rgba(86,180,233,0.7); }
@@ -341,12 +342,6 @@ export class AstroViewerElement extends HTMLElement {
       this.threeD = on;
       for (const p of this.panels.values()) p.viewer.setThreeD(on);
     });
-    const fit = document.createElement('button');
-    fit.type = 'button';
-    fit.textContent = 'fit';
-    fit.addEventListener('click', () => {
-      for (const p of this.panels.values()) p.viewer.fit();
-    });
     const reset = document.createElement('button');
     reset.type = 'button';
     reset.textContent = 'reset layout';
@@ -372,7 +367,7 @@ export class AstroViewerElement extends HTMLElement {
       item.append(dot, document.createTextNode(label));
       legend.appendChild(item);
     }
-    footer.append(this.playBtn, this.scrub, speed, spacing, ghost, threeD, fit, reset, legend, this.readout, this.fpsEl);
+    footer.append(this.playBtn, this.scrub, speed, spacing, ghost, threeD, reset, legend, this.readout, this.fpsEl);
 
     this.root.append(header, controls, this.stage, footer);
 
@@ -575,6 +570,14 @@ export class AstroViewerElement extends HTMLElement {
       'seg mini',
     );
     branchSeg.set(branch);
+    const home = document.createElement('button');
+    home.className = 'x home';
+    home.type = 'button';
+    home.title = 'reset the view';
+    home.innerHTML =
+      '<svg viewBox="0 0 16 16" width="14" height="14" aria-hidden="true"><path d="M8 2.2 1.8 7.6h1.7V13.5h3.3V9.7h2.4v3.8h3.3V7.6h1.7z" fill="currentColor"/></svg>';
+    home.addEventListener('pointerdown', (ev) => ev.stopPropagation());
+    home.addEventListener('click', () => this.panels.get(pid)?.viewer.fit());
     const close = document.createElement('button');
     close.className = 'x';
     close.type = 'button';
@@ -582,7 +585,7 @@ export class AstroViewerElement extends HTMLElement {
     close.textContent = '×';
     close.addEventListener('pointerdown', (ev) => ev.stopPropagation());
     close.addEventListener('click', () => this.closePanel(pid));
-    head.append(title, meta, sp, branchSeg.el, close);
+    head.append(title, meta, sp, branchSeg.el, home, close);
     head.addEventListener('pointerdown', (ev) => this.startDrag(ev, { kind: 'panel', id: pid }, head));
     const body = document.createElement('div');
     body.className = 'pbody';
