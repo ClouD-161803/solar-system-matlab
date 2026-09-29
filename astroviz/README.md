@@ -82,10 +82,13 @@ which is the path for ephemeris-scale data.
   in the reference figures), Okabe-Ito markers, fps counter, keyboard (space,
   arrows, shift+arrows).
 - The current member's trail and full orbit take its colormap colour. About
-  forty members are drawn dimly as context, and every member near the current
-  one is lit by a Gaussian kernel over parameter distance. Alphas relax
-  asymmetrically (about 60 ms in, 320 ms out), so members just visited trail
-  behind the direction of travel and fade. Always on; there is no toggle.
+  forty members are drawn as context. Members near the current one (Gaussian
+  kernel over parameter distance) carry a short trail just behind the
+  spacecraft that moves with it and fades along the orbit, so the family's
+  local structure shows where the craft is rather than all around the orbit.
+  The neighbourhood weight relaxes asymmetrically (about 60 ms in, 320 ms
+  out) when the slider moves. Always on; there is no toggle.
+- At most four panels; opening a fifth replaces the earliest-opened one.
 - Camera policy: a panel is fitted when opened and when the family changes;
   the parameter slider and branch toggle never move it.
 

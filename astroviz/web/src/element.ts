@@ -118,11 +118,13 @@ function select<T extends string>(options: { id: T; label: string }[], initial: 
   return s;
 }
 
-/** Grid columns for n panels: 1, 2, 3, 2x2, 3+2. */
+/** At most this many panels; opening another replaces the earliest-opened one, so the grid is never ragged. */
+const MAX_PANELS = 4;
+
+/** Grid columns for n panels: 1, 2, 3, 2x2. */
 function columnsFor(n: number): number {
   if (n <= 3) return Math.max(1, n);
-  if (n === 4) return 2;
-  return 3;
+  return 2;
 }
 
 export class AstroViewerElement extends HTMLElement {
@@ -359,6 +361,10 @@ export class AstroViewerElement extends HTMLElement {
       this.panels.delete(frame);
       this.frameSeg.setPressed(frame, false);
     } else {
+      if (this.panels.size >= MAX_PANELS) {
+        const oldest = this.panels.keys().next().value as FrameId; // Map keeps insertion order
+        this.togglePanel(oldest);
+      }
       const host = document.createElement('div');
       host.className = 'panel';
       this.stage.appendChild(host); // layout() sorts panels into FRAMES order

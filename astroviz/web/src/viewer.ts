@@ -71,11 +71,13 @@ export type FamilyMode = 'hidden' | 'neighbours' | 'family';
 
 /** Highlight kernel width as a fraction of the family's parameter range. */
 const NEIGHBOUR_SIGMA = 0.05;
-/** Alpha of the nearest neighbours; the current member itself is drawn separately. */
-const NEIGHBOUR_PEAK = 0.6;
-/** About this many members are drawn dimly as the family's context in 'family' mode. */
+/** Alpha of the nearest neighbours' trail; the current member itself is drawn separately. */
+const NEIGHBOUR_PEAK = 0.8;
+/** About this many members are drawn as the family's context in 'family' mode. */
 const SPARSE_COUNT = 40;
-const SPARSE_ALPHA = 0.3;
+const SPARSE_ALPHA = 0.45;
+/** Length of the neighbours' trail behind the spacecraft, in rad of true anomaly. */
+const TRAIL_LENGTH = 1.2;
 /** Time constants of the alpha relaxation: fast in, slower out, so the trail fades behind. */
 const RISE_MS = 60;
 const DECAY_MS = 320;
@@ -151,6 +153,8 @@ export class OrbitViewer {
   private alphaNow = new Float32Array(0); // per member, as drawn
   private alphaFrom = new Float32Array(0); // per member, at the start of the transition
   private alphaTo = new Float32Array(0); // per member, target
+  private baseAlpha = new Float32Array(0); // per member, constant context level
+  private written = new Float32Array(0); // per member, constant alpha last written, or -1 for per-vertex
   private fadeLast = 0;
   private fadeRaf = 0;
 
@@ -341,7 +345,10 @@ export class OrbitViewer {
       this.alphaNow = new Float32Array(n);
       this.alphaFrom = new Float32Array(n);
       this.alphaTo = new Float32Array(n);
+      this.baseAlpha = new Float32Array(n);
+      this.written = new Float32Array(n);
     }
+    this.written.fill(-2); // force a full write after the geometry is rebuilt
     const segs = n * (m - 1);
     const pos = new Float32Array(segs * 6);
     const col = new Float32Array(segs * 8);
@@ -356,7 +363,7 @@ export class OrbitViewer {
       transformTrajectory(xy, f, { mu: t.mu, e: t.params[i], f0: t.f0 }, this.frame, tmp);
       const u = pmax > pmin ? (t.params[i] - pmin) / (pmax - pmin) : 0.5;
       colormap(cmap, u, rgb);
-      const a = this.alphaNow[i];
+      const a = 0;
       for (let k = 0; k < m - 1; k++) {
         pos[o] = tmp[3 * k];
         pos[o + 1] = tmp[3 * k + 1];
@@ -397,10 +404,13 @@ export class OrbitViewer {
     for (let i = 0; i < n; i++) {
       const sparse = this.familyMode === 'family' && (i % stride === 0 || i === n - 1);
       const d = (t.params[i] - this.sys.e) / sigma;
-      const band = NEIGHBOUR_PEAK * Math.exp(-d * d);
-      this.alphaTo[i] = i === current ? 0 : Math.max(sparse ? SPARSE_ALPHA : 0, band);
+      this.baseAlpha[i] = sparse && i !== current ? SPARSE_ALPHA : 0;
+      this.alphaTo[i] = i === current ? 0 : NEIGHBOUR_PEAK * Math.exp(-d * d);
     }
-    if (this.familyMode === 'hidden') this.alphaTo.fill(0);
+    if (this.familyMode === 'hidden') {
+      this.alphaTo.fill(0);
+      this.baseAlpha.fill(0);
+    }
     cancelAnimationFrame(this.fadeRaf);
     if (immediate || this.familyMode === 'hidden') {
       this.alphaNow.set(this.alphaTo);
@@ -429,19 +439,50 @@ export class OrbitViewer {
     this.fadeRaf = requestAnimationFrame(step);
   }
 
-  /** Copies the per-member alphas into the family colour attribute. */
+  /**
+   * Writes vertex alphas: each member sits at its constant context level, and a
+   * member in the current neighbourhood also carries a trail just behind the
+   * spacecraft, weighted by its neighbourhood alpha and a window over how far
+   * behind the current true anomaly each of its samples lies.
+   */
   private writeAlpha(): void {
     const t = this.tracks;
     const attr = this.family.geometry.getAttribute('color') as THREE.BufferAttribute | undefined;
     if (!t || !attr) return;
     const col = attr.array as Float32Array;
-    const per = (t.samples - 1) * 8;
+    const m = t.samples;
+    const per = (m - 1) * 8;
+    const period = this.fRel.length ? this.fRel[this.fRel.length - 1] : 2 * Math.PI;
+    const fNow = this.fNow;
+    let dirty = false;
     for (let i = 0; i < t.count; i++) {
-      const a = this.alphaNow[i];
+      const band = this.alphaNow[i];
+      const base = this.baseAlpha[i];
       const start = i * per;
-      for (let c = start + 3; c < start + per; c += 4) col[c] = a;
+      if (band > 0.01) {
+        const f = t.anomalies.subarray(i * m, (i + 1) * m);
+        for (let k = 0; k < m; k++) {
+          let d = fNow - f[k];
+          if (d < 0) d += period;
+          let w = 0;
+          if (d < TRAIL_LENGTH) {
+            const u = d / TRAIL_LENGTH;
+            w = 1 - u * u * (3 - 2 * u); // smoothstep from 1 at the craft to 0 at the trail's end
+          }
+          const a = Math.max(base, band * w);
+          // sample k ends segment k-1 and starts segment k
+          if (k > 0) col[start + (k - 1) * 8 + 7] = a;
+          if (k < m - 1) col[start + k * 8 + 3] = a;
+        }
+        this.written[i] = -1;
+        dirty = true;
+      } else if (this.written[i] !== base) {
+        for (let c = start + 3; c < start + per; c += 4) col[c] = base;
+        this.written[i] = base;
+        dirty = true;
+      }
     }
-    attr.needsUpdate = true;
+    if (dirty) attr.needsUpdate = true;
   }
 
   /** Recolours the current member's trail and complete orbit with its colormap colour. */
@@ -481,6 +522,7 @@ export class OrbitViewer {
     const f = this.fRel;
     const fr = Math.max(f[0], Math.min(f[m - 1], fRel));
     this.fNow = fr;
+    this.writeAlpha(); // the neighbours' trail follows the spacecraft
     const k = segmentIndex(f, fr);
     const span = f[k + 1] - f[k];
     const u = span > 0 ? (fr - f[k]) / span : 0;
