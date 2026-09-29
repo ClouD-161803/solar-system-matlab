@@ -140,6 +140,8 @@ export class OrbitViewer {
 
   frame: FrameId = 'rotating_pulsating';
   showGhost = true;
+  /** draw the frame name at the top of the overlay (off when a panel header shows it) */
+  showTitle = false;
   private threeD = false;
 
   private sys: ER3BPSystem = { mu: 0.5, e: 0, f0: 0 };
@@ -786,7 +788,7 @@ export class OrbitViewer {
     g.font = '13px "Helvetica Neue", Arial, sans-serif';
     g.textAlign = 'center';
     g.textBaseline = 'top';
-    halo(spec.label, W / 2, 8);
+    if (this.showTitle) halo(spec.label, W / 2, 8);
     g.textBaseline = 'bottom';
     halo(spec.axes[0], W / 2, H - 6);
     g.save();

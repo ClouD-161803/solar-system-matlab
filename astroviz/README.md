@@ -75,12 +75,22 @@ which is the path for ephemeris-scale data.
 - Drawing is a pure function of a sample index (`showFrame(i)`). Playback just
   advances the index. This is what makes deterministic recording to video
   possible without dropped frames.
-- `<astro-viewer data="#id|url" frames="rotating_pulsating ...">` is the
-  embeddable element: family tabs, branch toggle, parameter slider, frame
-  toggles (one synchronized panel per frame), playback spacing, family
-  members coloured by parameter with a colourbar (one colormap per frame, as
-  in the reference figures), Okabe-Ito markers, fps counter, keyboard (space,
-  arrows, shift+arrows).
+- `<astro-viewer data="#id|url" [layout='{...}'] [frames="..."] [kiosk]>` is
+  the embeddable element. Panels tile the stage as a binary split tree
+  (`web/src/layout.ts`): drag a frame chip onto a panel's edge to split it
+  there, onto its centre to replace it, drag a panel by its header to move it
+  (centre drop swaps), drag gutters to resize, click a chip to add by
+  splitting the largest panel. Any count up to eight, never an empty cell.
+  Each panel owns its frame and its family branch (periapsis or apoapsis),
+  so both branches can be compared side by side; the eccentricity slider,
+  family tabs, clock and playback are shared and each panel shows its
+  branch's member nearest the slider. The layout is remembered in the
+  browser per page title; `layout` (the JSON from the element's `layoutJSON`
+  getter, or `build_html(layout=...)`) sets the initial layout of an export
+  and `kiosk` hides the controls and autoplays, for slides.
+- Family members coloured by parameter with a colourbar (one colormap per
+  frame, as in the reference figures), Okabe-Ito markers, fps counter,
+  keyboard (space, arrows, shift+arrows; up and down step the eccentricity).
 - The spacecraft leaves a comet-style trail in the current member's colormap
   colour: a tapered ribbon sized in screen pixels (6 px core, 22 px additive
   glow at the craft) that thins and fades over 30% of the period behind it,
@@ -89,9 +99,8 @@ which is the path for ephemeris-scale data.
 - About forty members are drawn as context and members near the current one
   (Gaussian kernel over parameter distance) are lit over their whole orbits,
   relaxing about 60 ms in and 320 ms out when the slider moves. Always on.
-- At most four panels; opening a fifth replaces the earliest-opened one.
-- Camera policy: a panel is fitted when opened and when the family changes;
-  the parameter slider and branch toggle never move it.
+- Camera policy: a panel is fitted when opened, resized and when the family
+  changes; the parameter slider and branch toggle never move it.
 
 ## Known limitations of the prototype
 
