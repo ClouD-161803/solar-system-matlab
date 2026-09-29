@@ -1,0 +1,33 @@
+"""Builds a self-contained HTML page from a container and the runtime bundle.
+
+The container bytes are gzip-compressed and base64-encoded into a script tag
+of type ``application/octet-stream``; the browser runtime finds it through the
+custom element's ``data`` attribute, decodes it with the native
+``DecompressionStream`` and parses it with no library. The runtime itself is
+inlined, so the resulting file works offline, from disk, inside an iframe on
+a reveal.js slide, or anywhere else a single HTML file can go.
+"""
+
+from __future__ import annotations
+
+import base64
+import gzip
+from importlib import resources
+
+
+def _template() -> str:
+    return resources.files(__package__).joinpath("template.html").read_text(encoding="utf-8")
+
+
+def build_html(container: bytes, runtime_js: str, *, title: str, compress: bool = True) -> str:
+    if "</script" in runtime_js.lower():
+        raise ValueError("runtime bundle contains a closing script tag")
+    payload = gzip.compress(container, compresslevel=6) if compress else container
+    encoded = base64.b64encode(payload).decode("ascii")
+    encoding = "gzip+base64" if compress else "base64"
+    html = _template()
+    html = html.replace("{{TITLE}}", title)
+    html = html.replace("{{ENCODING}}", encoding)
+    html = html.replace("{{DATA}}", encoded)
+    html = html.replace("{{RUNTIME}}", runtime_js)
+    return html

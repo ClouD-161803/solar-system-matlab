@@ -1,0 +1,5 @@
+web/node_modules/
+web/dist/astroviz.dev.js
+python/**/__pycache__/
+python/*.egg-info/
+examples/broucke/broucke_families.astv
