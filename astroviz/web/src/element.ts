@@ -75,8 +75,10 @@ interface SavedLayout {
 
 type DragPayload = { kind: 'frame'; frame: FrameId } | { kind: 'panel'; id: string };
 
-/** Playback steps per revolution at speed 1; matches the reference tool's 400 frames. */
+/** Frames per revolution for the readout and keyboard stepping; matches the reference tool's 400 frames. */
 const STEPS_PER_REV = 400;
+/** At speed 1 a revolution takes this many display frames (four times slower than one frame per step). */
+const SLOWDOWN = 4;
 const MAX_PANELS = 8;
 const BRANCHES = ['periapsis', 'apoapsis'];
 
@@ -978,7 +980,7 @@ export class AstroViewerElement extends HTMLElement {
         this.fpsEl.textContent = `${this.fpsEma.toFixed(0)} fps`;
       }
       this.lastTick = now;
-      this.progress += this.speed / STEPS_PER_REV;
+      this.progress += this.speed / (STEPS_PER_REV * SLOWDOWN);
       if (this.progress >= 1) this.progress -= 1;
       this.drawAll();
       this.raf = requestAnimationFrame(tick);
