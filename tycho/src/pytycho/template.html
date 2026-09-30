@@ -6,12 +6,12 @@
 <title>{{TITLE}}</title>
 <style>
   html, body { margin: 0; height: 100%; background: #000; color: #ddd; }
-  astro-viewer { display: block; width: 100%; height: 100%; }
+  tycho-viewer { display: block; width: 100%; height: 100%; }
 </style>
 </head>
 <body>
-<astro-viewer data="#astroviz-data" title="{{TITLE}}"{{ATTRS}}></astro-viewer>
-<script type="application/octet-stream" id="astroviz-data" data-encoding="{{ENCODING}}">{{DATA}}</script>
+<tycho-viewer data="#tycho-data" title="{{TITLE}}"{{ATTRS}}></tycho-viewer>
+<script type="application/octet-stream" id="tycho-data" data-encoding="{{ENCODING}}">{{DATA}}</script>
 <script>{{RUNTIME}}</script>
 </body>
 </html>

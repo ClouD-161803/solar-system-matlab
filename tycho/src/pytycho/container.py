@@ -1,8 +1,8 @@
-"""Binary container: a JSON header followed by 8-byte aligned typed buffers.
+"""The Tycho data container (``.tyd``): a JSON header followed by 8-byte aligned typed buffers.
 
 Layout::
 
-    bytes 0..3   magic b"ASTV"
+    bytes 0..3   magic b"TYCD"
     bytes 4..7   u32 little endian, format version
     bytes 8..11  u32 little endian, byte length of the JSON header
     header       UTF-8 JSON, then zero padding to the next multiple of 8
@@ -22,7 +22,7 @@ from typing import Any
 
 import numpy as np
 
-MAGIC = b"ASTV"
+MAGIC = b"TYCD"
 VERSION = 1
 
 _DTYPES = {
@@ -40,7 +40,7 @@ def _pad(n: int) -> int:
 class ContainerWriter:
     """Accumulates typed views and dataset records, then serialises them."""
 
-    def __init__(self, generator: str = "astroviz") -> None:
+    def __init__(self, generator: str = "pytycho") -> None:
         self.generator = generator
         self.datasets: list[dict[str, Any]] = []
         self.meta: dict[str, Any] = {}
@@ -75,7 +75,7 @@ class ContainerWriter:
 
     def header(self) -> dict[str, Any]:
         return {
-            "format": "astroviz-container",
+            "format": "tycho-data",
             "version": VERSION,
             "generator": self.generator,
             "meta": self.meta,
@@ -99,7 +99,7 @@ class Container:
 
     def __init__(self, data: bytes) -> None:
         if data[:4] != MAGIC:
-            raise ValueError("not an astroviz container")
+            raise ValueError("not a Tycho data container")
         version, hlen = struct.unpack_from("<II", data, 4)
         if version != VERSION:
             raise ValueError(f"unsupported container version {version}")

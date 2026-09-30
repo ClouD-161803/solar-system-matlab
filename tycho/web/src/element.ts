@@ -1,5 +1,5 @@
 /**
- * <astro-viewer>: the embeddable web component.
+ * <tycho-viewer>: the embeddable web component.
  *
  * Attributes:
  *   data    "#id" of an embedded script tag, or a URL to a sidecar container
@@ -196,7 +196,7 @@ function frameLabel(f: FrameId): string {
   return FRAMES.find((s) => s.id === f)?.label ?? f;
 }
 
-export class AstroViewerElement extends HTMLElement {
+export class TychoViewerElement extends HTMLElement {
   private container: Container | null = null;
   private families: FamilyDataset[] = [];
   private groups: string[] = [];
@@ -414,7 +414,7 @@ export class AstroViewerElement extends HTMLElement {
     this.families = c.datasets.filter((d): d is FamilyDataset => d.kind === 'periodic_orbit_family');
     this.groups = [...new Set(this.families.map((d) => d.group))];
     const gs = seg(
-      this.groups.map((g) => ({ id: g, label: g.replace(/^Broucke family /, 'family ') })),
+      this.groups.map((g) => ({ id: g, label: g })),
       (g) => this.setGroup(g),
     );
     this.groupSeg.el.replaceWith(gs.el);
@@ -869,7 +869,7 @@ export class AstroViewerElement extends HTMLElement {
   }
 
   private storageKey(): string {
-    return `astroviz:layout:${this.getAttribute('title') ?? ''}`;
+    return `tycho:layout:${this.getAttribute('title') ?? ''}`;
   }
 
   private remember(): void {
@@ -1029,6 +1029,6 @@ export class AstroViewerElement extends HTMLElement {
   }
 }
 
-export function define(tag = 'astro-viewer'): void {
-  if (!customElements.get(tag)) customElements.define(tag, AstroViewerElement);
+export function define(tag = 'tycho-viewer'): void {
+  if (!customElements.get(tag)) customElements.define(tag, TychoViewerElement);
 }

@@ -1,5 +1,5 @@
 /**
- * Reader for the astroviz binary container (see python/astroviz/container.py).
+ * Reader for the Tycho data container, .tyd (see src/pytycho/container.py).
  * A JSON header followed by 8-byte aligned typed buffers; no dependencies.
  */
 
@@ -29,7 +29,7 @@ export interface DatasetRecord {
 
 export type TypedArray = Float32Array | Float64Array | Int32Array | Uint8Array;
 
-const MAGIC = 0x56545341; // "ASTV" little endian
+const MAGIC = 0x44435954; // "TYCD" little endian
 
 export class Container {
   readonly header: Header;
@@ -44,7 +44,7 @@ export class Container {
 
   static parse(buffer: ArrayBuffer): Container {
     const dv = new DataView(buffer);
-    if (dv.getUint32(0, true) !== MAGIC) throw new Error('not an astroviz container');
+    if (dv.getUint32(0, true) !== MAGIC) throw new Error('not a Tycho data container');
     const version = dv.getUint32(4, true);
     if (version !== 1) throw new Error(`unsupported container version ${version}`);
     const hlen = dv.getUint32(8, true);
@@ -98,7 +98,7 @@ function base64ToBytes(text: string): Uint8Array<ArrayBuffer> {
   return out;
 }
 
-/** Decodes a container embedded in a script tag by python/astroviz/html.py. */
+/** Decodes a container embedded in a script tag by src/pytycho/html.py. */
 export async function decodeEmbedded(el: HTMLScriptElement): Promise<ArrayBuffer> {
   const encoding = el.dataset.encoding ?? 'base64';
   const bytes = base64ToBytes(el.textContent ?? '');

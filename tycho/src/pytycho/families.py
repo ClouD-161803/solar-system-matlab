@@ -1,36 +1,36 @@
-"""Periodic orbit families: loading PyDylan family CSVs and exporting them.
+"""Periodic orbit families: sampling members and writing them to a Tycho container.
 
-A family file is what ``PeriodicOrbitFamily.save_family_data_to_file`` writes:
-one row per member with the continuation parameter, energy, period and the six
-initial state elements. It holds no trajectories, so exporting a family for
-visualization means sampling each member along its orbit first. In production
-that sampling is PyDylan's job; ``propagate`` is injected so the example can
-use the stand-in integrator from :mod:`astroviz.er3bp`.
+A family is the set of initial conditions a continuation run produces: one
+member per parameter value, each with a period and an initial state. It holds
+no trajectories, so exporting a family means propagating each member over one
+period first. Propagation is injected as a ``Propagator``; the PyDylan adapter
+(:mod:`pytycho.adapters.pydylan`) provides one, and any other integrator with
+the same signature works. pytycho itself never integrates.
 
 Sampling strategy
 -----------------
 Frames drawn at equal intervals of the independent variable look jagged where
 the spacecraft covers a long stretch of orbit per radian (close approaches,
-high eccentricity in inertial frames). Following the matplotlib reference
-tool, each member is propagated densely and then resampled at equal intervals
-of *blended on-screen arclength*: in each of the five display frames the
-per-step distance is normalised by that frame's extent, the largest across
-frames is taken at every step, and the samples divide the running total
-evenly. The stored samples therefore concentrate where any frame bends, and
-the browser interpolates the spacecraft between them along a curve that is
-smooth in every frame. Each sample carries its own true anomaly so the
-primaries can be placed exactly.
+high eccentricity in inertial frames). Each member is therefore propagated
+densely and resampled at equal intervals of *blended on-screen arclength*: in
+each of the five display frames the per-step distance is normalised by that
+frame's extent, the largest across frames is taken at every step, and the
+samples divide the running total evenly. The stored samples concentrate where
+any frame bends, and the browser interpolates the spacecraft between them.
+Each sample carries its own true anomaly so the primaries are placed exactly.
 """
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any, Callable
 
 import numpy as np
 
 from .container import ContainerWriter
 
+#: ``propagate(initial_state, mu, e, f0, f_grid) -> states`` with ``states`` of shape
+#: ``(len(f_grid), >=4)`` holding x, y, x', y' (rotating-pulsating) at ``f0 + f_grid``.
 Propagator = Callable[[np.ndarray, float, float, float, np.ndarray], np.ndarray]
 
 FRAME_IDS = ("rotating_pulsating", "rotating", "barycentric_inertial", "inertial_primary", "inertial_secondary")
@@ -38,28 +38,22 @@ FRAME_IDS = ("rotating_pulsating", "rotating", "barycentric_inertial", "inertial
 
 @dataclass
 class Family:
-    parameter: np.ndarray  # (N,)
-    energy: np.ndarray  # (N,)
-    period: np.ndarray  # (N,)
-    initial_state: np.ndarray  # (N, 6)
-    corrector_iterations: np.ndarray  # (N,)
+    """One branch of a periodic orbit family, as plain arrays."""
+
+    parameter: np.ndarray  # (N,) continuation parameter, eccentricity for ER3BP families
+    period: np.ndarray  # (N,) in the units of the independent variable (rad of true anomaly)
+    initial_state: np.ndarray  # (N, 6) x, y, z, x', y', z'
+    energy: np.ndarray = field(default_factory=lambda: np.empty(0))  # (N,) or empty
+
+    def __post_init__(self) -> None:
+        self.parameter = np.asarray(self.parameter, dtype=float)
+        self.period = np.asarray(self.period, dtype=float)
+        self.initial_state = np.asarray(self.initial_state, dtype=float).reshape(len(self.parameter), -1)
+        if len(self.period) != len(self.parameter):
+            raise ValueError("parameter and period must have the same length")
 
     def __len__(self) -> int:
         return len(self.parameter)
-
-
-def load_family_csv(path: str) -> Family:
-    """Reads a family CSV with the PyDylan header row."""
-    rows = np.loadtxt(path, delimiter=",", skiprows=1, ndmin=2)
-    if rows.shape[1] != 10:
-        raise ValueError(f"{path}: expected 10 columns, found {rows.shape[1]}")
-    return Family(
-        parameter=rows[:, 0],
-        energy=rows[:, 1],
-        period=rows[:, 2],
-        initial_state=rows[:, 3:9],
-        corrector_iterations=rows[:, 9].astype(np.int32),
-    )
 
 
 # --- kinematic frames (mirror of web/src/frames.ts, used only for resampling) --------------------

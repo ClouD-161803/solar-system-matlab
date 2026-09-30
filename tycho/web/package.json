@@ -1,0 +1,45 @@
+{
+  "name": "pytycho",
+  "version": "0.1.0",
+  "description": "Tycho browser runtime: animated, interactive astrodynamics visualizations as a web component",
+  "scripts": {
+    "build": "npm run build:iife && npm run build:esm && npm run build:py",
+    "build:iife": "esbuild src/index.ts --bundle --format=iife --global-name=tycho --minify --target=es2020 --outfile=dist/tycho.js",
+    "build:esm": "esbuild src/index.ts --bundle --format=esm --minify --target=es2020 --outfile=dist/tycho.esm.js",
+    "build:py": "node -e \"require('fs').mkdirSync('../src/pytycho/_static',{recursive:true});require('fs').copyFileSync('dist/tycho.js','../src/pytycho/_static/tycho.js')\"",
+    "build:dev": "esbuild src/index.ts --bundle --format=iife --global-name=tycho --sourcemap=inline --target=es2020 --outfile=dist/tycho.dev.js",
+    "typecheck": "tsc --noEmit"
+  },
+  "devDependencies": {
+    "@types/three": "^0.180.0",
+    "esbuild": "^0.28.0",
+    "typescript": "^5.6.0"
+  },
+  "dependencies": {
+    "three": "^0.180.0"
+  },
+  "main": "dist/tycho.esm.js",
+  "module": "dist/tycho.esm.js",
+  "exports": {
+    ".": "./dist/tycho.esm.js",
+    "./iife": "./dist/tycho.js"
+  },
+  "files": [
+    "dist",
+    "src"
+  ],
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/beeson-group/tycho.git",
+    "directory": "web"
+  },
+  "homepage": "https://github.com/beeson-group/tycho",
+  "keywords": [
+    "astrodynamics",
+    "visualization",
+    "three-body",
+    "webgl",
+    "web-component"
+  ],
+  "sideEffects": true
+}

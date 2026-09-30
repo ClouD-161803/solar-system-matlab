@@ -1,0 +1,41 @@
+[build-system]
+requires = ["hatchling>=1.24"]
+build-backend = "hatchling.build"
+
+[project]
+name = "pytycho"
+dynamic = ["version"]
+description = "Animated, interactive astrodynamics visualizations in a single HTML file"
+readme = "README.md"
+requires-python = ">=3.10"
+# license: to be chosen (Apache-2.0 recommended); add LICENSE and `license = "Apache-2.0"` before publishing
+authors = [{ name = "Beeson Group" }]
+keywords = ["astrodynamics", "visualization", "three-body", "periodic orbits", "webgl"]
+classifiers = [
+  "Programming Language :: Python :: 3",
+  "Topic :: Scientific/Engineering :: Astronomy",
+  "Topic :: Scientific/Engineering :: Visualization",
+]
+dependencies = ["numpy>=1.24"]
+
+[project.optional-dependencies]
+test = ["pytest>=8", "scipy>=1.10"]
+
+[project.urls]
+Homepage = "https://github.com/beeson-group/tycho"
+Issues = "https://github.com/beeson-group/tycho/issues"
+
+[tool.hatch.version]
+path = "src/pytycho/__init__.py"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/pytycho"]
+# the runtime bundle is generated (web/ -> npm run build) and gitignored, so include it explicitly
+artifacts = ["src/pytycho/_static/tycho.js"]
+
+[tool.hatch.build.targets.sdist]
+include = ["src/pytycho", "README.md"]
+artifacts = ["src/pytycho/_static/tycho.js"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
